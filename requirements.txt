@@ -1,0 +1,26 @@
+# --- Gradio UI ---
+gradio>=5.0.0
+
+# --- Vector DB ---
+lancedb>=0.6.0
+
+# --- Utilities ---
+sentencepiece>=0.2.0
+python-dotenv
+pyright
+
+# --- Ollama client ---
+ollama
+
+# Core Docling library
+docling>=2.10.0
+
+# HTTP client untuk panggil VLM (OpenAI-compatible / Ollama, dll.)
+requests>=2.31.0
+
+litepali
+pdf2image>=1.17.0
+Pillow>=10.0.0
+tqdm>=4.66.0
+
+pymupdf
