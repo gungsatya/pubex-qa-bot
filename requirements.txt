@@ -1,26 +1,32 @@
-# --- Gradio UI ---
-gradio>=5.0.0
+# Core language/runtime helpers
+python-dotenv==1.0.1
 
-# --- Vector DB ---
-lancedb>=0.6.0
+# Database
+SQLAlchemy==2.0.29
+psycopg2-binary==2.9.9
 
-# --- Utilities ---
-sentencepiece>=0.2.0
-python-dotenv
-pyright
+# Migrations
+alembic==1.13.1
 
-# --- Ollama client ---
-ollama
+# Chainlit (frontend chat interface)
+chainlit==1.1.402
 
-# Core Docling library
-docling>=2.10.0
+# Embedding & LLM integration with Ollama (client REST)
+httpx==0.27.0
+pydantic==2.6.4
 
-# HTTP client untuk panggil VLM (OpenAI-compatible / Ollama, dll.)
-requests>=2.31.0
+# Optional for pgvector storage (kalau nanti dipakai)
+pgvector==0.2.4
 
-litepali
-pdf2image>=1.17.0
-Pillow>=10.0.0
-tqdm>=4.66.0
+# TUI (Textual UI atau Rich UI)
+rich==13.7.1
+textual==0.47.1
 
-pymupdf
+# PDF and Slide processing (minimal)
+PyMuPDF==1.24.1   # alias "fitz", penting untuk extract slide/page
+pdf2image==1.17.0
+pillow==10.3.0
+
+# Utilities
+tqdm==4.66.2
+requests==2.31.0
