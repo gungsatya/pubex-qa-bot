@@ -1,0 +1,20 @@
+2026-01-19 07:26:08 | INFO | __main__ | main | Starting Pubex RAG TUI...
+2026-01-19 07:26:08 | DEBUG | asyncio | selector_events | Using selector: EpollSelector
+2026-01-19 07:32:57 | INFO | __main__ | main | Memulai QA-Bot CLI TUI...
+2026-01-19 07:33:15 | INFO | __main__ | main | User exited QA-Bot TUI.
+2026-01-19 07:38:06 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:39:02 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:45:22 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:45:58 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:48:04 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:49:16 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:50:09 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:50:27 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:51:16 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:51:42 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:52:08 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:52:24 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:53:37 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:55:07 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 07:55:23 | INFO | __main__ | main | Starting QA-Bot CLI
+2026-01-19 11:26:28 | INFO | __main__ | main | Download documents stub called.

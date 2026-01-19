@@ -18,10 +18,6 @@ pydantic==2.6.4
 # Optional for pgvector storage (kalau nanti dipakai)
 pgvector==0.2.4
 
-# TUI (Textual UI atau Rich UI)
-rich==13.7.1
-textual==0.47.1
-
 # PDF and Slide processing (minimal)
 PyMuPDF==1.24.1   # alias "fitz", penting untuk extract slide/page
 pdf2image==1.17.0
@@ -30,3 +26,6 @@ pillow==10.3.0
 # Utilities
 tqdm==4.66.2
 requests==2.31.0
+
+colorlog==6.8.2
+
