@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
-import subprocess
+from pathlib import Path
+from app.core.pdf_downloader import download_all_from_idx_for_year
 import sys
 import logging
 from typing import Callable, Dict
@@ -20,6 +21,19 @@ MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
 
+def _ask_doc_type() -> str | None:
+    print("\nPilih jenis dokumen:")
+    print("  [1] Pubex (Public Expose)")
+    print("  [2] Laporan Keuangan")
+    choice = input("Pilihan [1-2]: ").strip()
+
+    if choice == "1":
+        return "pubex"
+    if choice == "2":
+        return "financial_report"
+
+    print("Pilihan tidak valid.")
+    return None
 
 def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
@@ -64,9 +78,28 @@ def print_menu():
 
 
 def download_documents():
-    print(f"\n{YELLOW}Download Dokumen{RESET}")
-    print("Belum diimplementasikan.")
-    logger.info("Download documents stub called.")
+    print(f"\n{YELLOW}Download Dokumen dari IDX{RESET}")
+
+    doc_type = _ask_doc_type()
+    if not doc_type:
+        return
+
+    year_text = input("Masukkan tahun dokumen (mis. 2023): ").strip()
+    if not year_text.isdigit():
+        print(f"{RED}Tahun harus berupa angka.{RESET}")
+        return
+
+    year = int(year_text)
+
+    base_dir = Path("src/data/documents")
+
+    print(
+        f"\nMulai download {doc_type} tahun {year} "
+        f"ke folder: {base_dir}/{doc_type}/{year}"
+    )
+    download_all_from_idx_for_year(year, doc_type, base_dir)
+    print(f"\n{GREEN}Proses download selesai (cek log & DB).{RESET}")
+
 
 
 def run_ingestion():

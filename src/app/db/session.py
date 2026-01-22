@@ -1,6 +1,6 @@
 # src/app/db/session.py
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 
 from app.config import DATABASE_URL
 from app.db.models import Base
@@ -15,3 +15,7 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine,
 )
+
+def get_session() -> Session:
+    """Helper untuk mendapatkan Session baru."""
+    return SessionLocal()
