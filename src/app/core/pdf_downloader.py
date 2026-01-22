@@ -7,10 +7,12 @@ import logging
 import os
 import random
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List
 
 import cloudscraper
+import fitz
 import requests
 from tqdm import tqdm
 
@@ -26,6 +28,13 @@ from src.data.enums import DocumentStatusEnum
 logger = logging.getLogger(__name__)
 
 IDX_API_URL = "https://www.idx.co.id/primary/ListedCompany/GetProfileAnnouncement"
+
+
+def _sanitize_filename(name: str) -> str:
+    """Pastikan nama file aman dan tidak berisi separator path."""
+    base_name = Path(name).name
+    sanitized = base_name.replace("/", "_").replace("\\", "_").strip()
+    return sanitized or "document.pdf"
 
 
 def _build_keyword_for_type(doc_type: str) -> str:
@@ -52,15 +61,36 @@ def _build_idx_params(issuer_code: str, year: int, doc_type: str) -> dict:
     }
 
 
+def _parse_publish_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        logger.warning("Format TglPengumuman tidak valid: %s", value)
+        return None
+
+
+def _extract_pengumuman_metadata(pengumuman: Dict) -> Dict:
+    return {
+        "Id2": pengumuman.get("Id2"),
+        "NoPengumuman": pengumuman.get("NoPengumuman"),
+        "JudulPengumuman": pengumuman.get("JudulPengumuman"),
+        "PerihalPengumuman": pengumuman.get("PerihalPengumuman"),
+        "Kode_Emiten": pengumuman.get("Kode_Emiten"),
+        "JenisPengumuman": pengumuman.get("JenisPengumuman"),
+    }
+
+
 def _fetch_attachments_for_issuer(
     scraper: cloudscraper.CloudScraper,
     issuer_code: str,
     year: int,
     doc_type: str,
-) -> List[Tuple[str, str]]:
+) -> List[Dict]:
     """
     Panggil API IDX untuk satu issuer & tahun & tipe dokumen.
-    Return list (download_url, file_name).
+    Return list of attachment info dicts.
     """
     params = _build_idx_params(issuer_code, year, doc_type)
     resp = scraper.get(IDX_API_URL, params=params, timeout=30)
@@ -79,9 +109,12 @@ def _fetch_attachments_for_issuer(
     data = resp.json()
     replies = data.get("Replies", []) or []
 
-    attachments: List[Tuple[str, str]] = []
+    attachments: List[Dict] = []
 
     for reply in replies:
+        pengumuman = reply.get("pengumuman") or {}
+        publish_at = _parse_publish_at(pengumuman.get("TglPengumuman"))
+        pengumuman_metadata = _extract_pengumuman_metadata(pengumuman)
         raw_attachments = reply.get("attachments") or []
         filtered = [att for att in raw_attachments if att.get("IsAttachment")]
 
@@ -91,8 +124,19 @@ def _fetch_attachments_for_issuer(
                 continue
 
             download_url = f"https://idx.co.id{full_save_path}"
-            file_name = os.path.basename(full_save_path)
-            attachments.append((download_url, file_name))
+            original_filename = att.get("OriginalFilename") or os.path.basename(
+                full_save_path
+            )
+            safe_filename = _sanitize_filename(original_filename)
+            attachments.append(
+                {
+                    "download_url": download_url,
+                    "file_name": safe_filename,
+                    "original_filename": original_filename,
+                    "publish_at": publish_at,
+                    "pengumuman_metadata": pengumuman_metadata,
+                }
+            )
 
     return attachments
 
@@ -119,6 +163,16 @@ def _compute_checksum(path: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             sha256.update(chunk)
     return sha256.hexdigest()
+
+
+def _get_pdf_page_count(path: Path) -> int | None:
+    """Hitung jumlah halaman PDF, return None jika gagal."""
+    try:
+        with fitz.open(path) as doc:
+            return doc.page_count
+    except Exception:  # noqa: BLE001
+        logger.exception("Gagal menghitung jumlah halaman untuk %s", path)
+        return None
 
 
 def download_all_from_idx_for_year(
@@ -201,7 +255,12 @@ def download_all_from_idx_for_year(
             emiten_dir = year_dir / code
             emiten_dir.mkdir(parents=True, exist_ok=True)
 
-            for download_url, file_name in attachments:
+            for attachment in attachments:
+                download_url = attachment["download_url"]
+                file_name = attachment["file_name"]
+                original_filename = attachment["original_filename"]
+                publish_at = attachment["publish_at"]
+                pengumuman_metadata = attachment["pengumuman_metadata"]
                 dest_path = emiten_dir / file_name
 
                 # Skip kalau file sudah ada → compute checksum & cek DB
@@ -220,7 +279,7 @@ def download_all_from_idx_for_year(
 
                 # Download file
                 try:
-                    logger.info("Download %s -> %s", download_url, dest_path)
+                    logger.info("Download %s", original_filename)
                     _download_file(scraper, download_url, dest_path)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception(
@@ -247,14 +306,19 @@ def download_all_from_idx_for_year(
 
                 # Build pretty name & metadata
                 pretty_type = "Public Expose" if doc_type == "pubex" else "Laporan Keuangan"
-                doc_name = f"{pretty_type} {code} {year} - {file_name}"
+                doc_name = f"{pretty_type} {code} {year} - {original_filename}"
 
+                page_count = _get_pdf_page_count(dest_path)
+                page_count = _get_pdf_page_count(dest_path)
                 metadata = {
                     "source": "IDX",
-                    "type": doc_type,
+                    "type": "pubex" if doc_type == "pubex" else "finrep",
                     "year": year,
+                    "collection_name": collection.name,
+                    "pages": page_count,
                     "issuer_code": code,
-                    "filename": file_name,
+                    "filename": original_filename,
+                    **pengumuman_metadata,
                 }
 
                 # Insert to documents (ONE DOCUMENT)
@@ -264,6 +328,7 @@ def download_all_from_idx_for_year(
                     checksum=checksum,
                     name=doc_name,
                     file_path=str(dest_path),
+                    publish_at=publish_at,
                     status_id=DocumentStatusEnum.DOWNLOADED.id,
                     metadata=metadata,
                 )
@@ -287,7 +352,7 @@ def download_all_from_idx_for_year(
 
                 # Download (overwrite atau baru)
                 try:
-                    logger.info("Download %s -> %s", download_url, dest_path)
+                    logger.info("Download %s", original_filename)
                     _download_file(scraper, download_url, dest_path)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception(
@@ -314,14 +379,19 @@ def download_all_from_idx_for_year(
                 # Buat nama dokumen yang manusiawi
                 # contoh: "PUBEX ABMM 2023 - <nama_file>.pdf"
                 pretty_type = "Public Expose" if doc_type == "pubex" else "Laporan Keuangan"
-                doc_name = f"{pretty_type} {code} {year} - {file_name}"
+                doc_name = f"{pretty_type} {code} {year} - {original_filename}"
 
+                page_count = _get_pdf_page_count(dest_path)
+                page_count = _get_pdf_page_count(dest_path)
                 metadata = {
                     "source": "IDX",
-                    "type": doc_type,
+                    "type": "pubex" if doc_type == "pubex" else "finrep",
                     "year": year,
+                    "collection_name": collection.name,
+                    "pages": page_count,
                     "issuer_code": code,
-                    "filename": file_name,
+                    "filename": original_filename,
+                    **pengumuman_metadata,
                 }
 
                 doc = doc_repo.create_document(
@@ -330,6 +400,7 @@ def download_all_from_idx_for_year(
                     checksum=checksum,
                     name=doc_name,
                     file_path=str(dest_path),
+                    publish_at=publish_at,
                     status_id=downloaded_status.id,
                     metadata=metadata,
                 )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
@@ -25,6 +26,7 @@ class DocumentRepository:
         checksum: str,
         name: str,
         file_path: str,
+        publish_at: Optional[datetime] = None,
         status_id: int,
         metadata: dict | None = None,
     ) -> Document:
@@ -33,9 +35,10 @@ class DocumentRepository:
             issuer_code=issuer_code,
             checksum=checksum,
             name=name,
+            publish_at=publish_at,
             status=status_id,
             file_path=file_path,
-            metadata=metadata or {},
+            document_metadata=metadata or {},
         )
         self.session.add(doc)
         self.session.flush()

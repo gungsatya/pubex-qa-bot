@@ -38,12 +38,14 @@ class CollectionRepository:
 
         collection = self.get_by_code(code)
         if collection:
+            if not collection.collection_metadata:
+                collection.collection_metadata = {"type": doc_type, "year": year}
             return collection
 
         collection = Collection(
             code=code,
             name=name,
-            metadata={"type": doc_type, "year": year},
+            collection_metadata={"type": doc_type, "year": year},
         )
         self.session.add(collection)
         self.session.flush()  # supaya collection.code/uuid langsung terisi bila perlu
