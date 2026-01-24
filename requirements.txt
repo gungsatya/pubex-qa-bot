@@ -31,3 +31,4 @@ llama-index-embeddings-ollama==0.8.6
 
 colorlog==6.8.2
 cloudscraper==1.2.71
+streamlit
