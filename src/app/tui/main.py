@@ -2,6 +2,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from app.core.pdf_downloader import download_all_from_idx_for_year
+from app.core.ingestion_pipeline import run_ingestion as run_ingestion_pipeline
+from app.core.embedding_pipeline import run_embedding_pipeline
 import sys
 import logging
 from typing import Callable, Dict
@@ -73,7 +75,8 @@ def print_menu():
     print(f"{BOLD}Main Menu{RESET}\n")
     print(f"  [1] Download Dokumen{RESET}")
     print(f"  [2] Ingestion Pipeline{RESET}")
-    print(f"  [3] Run QA-Bot (Chainlit){RESET}")
+    print(f"  [3] Embedding Pipeline{RESET}")
+    print(f"  [4] Run QA-Bot (Chainlit){RESET}")
     print(f"  [0] {RED}Keluar{RESET}\n")
 
 
@@ -104,8 +107,23 @@ def download_documents():
 
 def run_ingestion():
     print(f"\n{YELLOW}Ingestion Pipeline{RESET}")
-    print("Belum diimplementasikan.")
-    logger.info("Ingestion stub called.")
+    limit_text = input(
+        "Limit dokumen (kosong = semua, contoh 10): "
+    ).strip()
+    if limit_text:
+        if not limit_text.isdigit():
+            print(f"{RED}Limit harus berupa angka.{RESET}")
+            return
+        limit = int(limit_text)
+    else:
+        limit = None
+
+    print(
+        f"{CYAN}Mulai ingestion dokumen berstatus downloaded..."
+        f"{RESET}"
+    )
+    logger.info("Ingestion started (limit=%s).", limit)
+    run_ingestion_pipeline(limit=limit)
 
 
 def run_chainlit():
@@ -113,18 +131,36 @@ def run_chainlit():
     logger.info("Chainlit stub called.")
     print("Belum diimplementasikan.")
 
+def run_embedding():
+    print(f"\n{YELLOW}Embedding Pipeline{RESET}")
+    limit_text = input(
+        "Limit slide (kosong = semua, contoh 100): "
+    ).strip()
+    if limit_text:
+        if not limit_text.isdigit():
+            print(f"{RED}Limit harus berupa angka.{RESET}")
+            return
+        limit = int(limit_text)
+    else:
+        limit = None
+
+    print(f"{CYAN}Mulai embedding content_text...{RESET}")
+    logger.info("Embedding started (limit=%s).", limit)
+    run_embedding_pipeline(limit=limit)
+
 
 def main_loop():
     actions: Dict[str, Callable[[], None]] = {
         "1": download_documents,
         "2": run_ingestion,
-        "3": run_chainlit,
+        "3": run_embedding,
+        "4": run_chainlit,
     }
 
     while True:
         print_header()
         print_menu()
-        choice = input("> Pilih menu [0-3]: ").strip()
+        choice = input("> Pilih menu [0-4]: ").strip()
 
         if choice == "0":
             print(f"\n{RED}Keluar dari QA-Bot. Bye!{RESET}")
