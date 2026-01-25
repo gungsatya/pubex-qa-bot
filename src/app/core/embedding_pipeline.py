@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable, List
+import math
+from typing import Iterable, List, Tuple
 
 from sqlalchemy import select, func
 
@@ -42,6 +43,29 @@ def _get_slides_to_embed(limit: int | None) -> List[Slide]:
 def _chunk(items: List[Slide], size: int) -> Iterable[List[Slide]]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _prepare_texts(batch: List[Slide]) -> Tuple[List[Slide], List[str]]:
+    pairs: List[Tuple[Slide, str]] = []
+    for slide in batch:
+        text = (slide.content_text or "").strip()
+        if text:
+            pairs.append((slide, text))
+    if not pairs:
+        return [], []
+    slides, texts = zip(*pairs)
+    return list(slides), list(texts)
+
+
+def _is_valid_vector(vector: List[float]) -> bool:
+    if not vector:
+        return False
+    for value in vector:
+        if not isinstance(value, (int, float)):
+            return False
+        if not math.isfinite(float(value)):
+            return False
+    return True
 
 
 def _update_document_status(session, document_ids: List[str]) -> None:
@@ -88,32 +112,44 @@ def run_embedding_pipeline(
     )
 
     for batch in _chunk(slides, batch_size):
-        texts = [(slide.content_text or "").strip() for slide in batch]
-        if not any(texts):
+        slides_with_text, texts = _prepare_texts(batch)
+        if not texts:
             logger.warning("Batch kosong: tidak ada content_text.")
             continue
 
+        embeddings: List[List[float]] = []
         try:
             embeddings = embed_model.get_text_embeddings(texts)
         except AttributeError:
             embeddings = [embed_model.get_text_embedding(t) for t in texts]
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Gagal generate embedding: %s", exc)
-            continue
+            logger.exception(
+                "Gagal generate embedding batch, fallback per item: %s", exc
+            )
+            embeddings = []
+            for text in texts:
+                try:
+                    embeddings.append(embed_model.get_text_embedding(text))
+                except Exception as per_exc:  # noqa: BLE001
+                    logger.exception("Gagal embed item, dilewati: %s", per_exc)
+                    embeddings.append([])
 
-        if len(embeddings) != len(batch):
+        if len(embeddings) != len(slides_with_text):
             logger.error(
                 "Jumlah embedding tidak cocok (got=%s, expected=%s).",
                 len(embeddings),
-                len(batch),
+                len(slides_with_text),
             )
             continue
 
         doc_ids: List[str] = []
         with get_session() as session:
-            for slide, vector in zip(batch, embeddings):
-                if not vector:
-                    logger.warning("Embedding kosong untuk slide %s.", slide.id)
+            for slide, vector in zip(slides_with_text, embeddings):
+                if not _is_valid_vector(vector):
+                    logger.warning(
+                        "Embedding tidak valid untuk slide %s (NaN/inf/kosong).",
+                        slide.id,
+                    )
                     continue
                 if len(vector) != EMBEDDING_DIM:
                     logger.error(

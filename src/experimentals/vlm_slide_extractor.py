@@ -5,7 +5,7 @@ pdf_vlm_extractor.py
 Script untuk:
 - Membaca file PDF
 - Mengubah tiap halaman menjadi image
-- Mengirim image ke Ollama VLM (OpenAI compatible /v1/chat/completions)
+ - Mengirim image ke VLM via request OpenAI-compatible API
 - Menghasilkan penjelasan konten halaman dalam bahasa Indonesia
 - Menggabungkan hasil ke dalam satu file Markdown
 
@@ -14,8 +14,8 @@ Dependensi:
 
 Contoh pemakaian:
     python pdf_vlm_extractor.py input.pdf -o output.md \
-        --model qwen3-vl:latest \
-        --ollama-url http://localhost:11434/v1/chat/completions
+        --model deepseek-vl:7b \
+        --base-url https://api.deepseek.com
 """
 
 import argparse
@@ -112,8 +112,32 @@ def build_prompt(page_num: int, total_pages: int, language: str = "id") -> str:
         )
 
 
-def call_ollama_vlm(
-    ollama_url: str,
+def _resolve_endpoint(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/chat/completions") or base_url.endswith(
+        "/v1/chat/completions"
+    ):
+        return base_url
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        return f"{base_url}/v1/chat/completions"
+    return f"{base_url}/chat/completions"
+
+
+def _is_local_endpoint(base_url: str) -> bool:
+    return "localhost" in base_url or "127.0.0.1" in base_url
+
+
+def _resolve_api_key(api_key: str | None, base_url: str) -> str:
+    if api_key:
+        return api_key
+    if _is_local_endpoint(base_url):
+        return "ollama"
+    raise RuntimeError("DEEPSEEK_API_KEY belum di-set untuk endpoint non-lokal.")
+
+
+def call_vlm(
+    base_url: str,
+    api_key: str | None,
     model: str,
     prompt: str,
     image_data_url: str,
@@ -121,44 +145,63 @@ def call_ollama_vlm(
     timeout: int = 180,
 ) -> str:
     """
-    Memanggil Ollama VLM dengan endpoint /v1/chat/completions (OpenAI compatible).
+    Memanggil VLM dengan API OpenAI-compatible.
 
-    :param ollama_url: URL lengkap endpoint, misal "http://localhost:11434/v1/chat/completions"
-    :param model: Nama model Ollama, misal "qwen3-vl:latest"
+    :param base_url: Base URL endpoint, misal "https://api.deepseek.com"
+    :param api_key: API key untuk endpoint (opsional untuk lokal)
+    :param model: Nama model VLM, misal "deepseek-vl:7b"
     :param prompt: Teks prompt
     :param image_data_url: Data URL base64 untuk gambar
     :param temperature: Suhu sampling
     :param timeout: Timeout request (detik)
     :return: Teks hasil dari model
     """
+    endpoint = _resolve_endpoint(base_url)
+    api_key = _resolve_api_key(api_key, base_url)
+    headers = {"Content-Type": "application/json"}
+    if api_key and api_key != "ollama":
+        headers["Authorization"] = f"Bearer {api_key}"
+    supports_images = _is_local_endpoint(base_url) or os.getenv(
+        "VLM_IMAGE_SUPPORT", ""
+    ).lower() in {"1", "true", "yes"}
+    if supports_images:
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]
+    else:
+        print(
+            "[WARN] Endpoint tidak mendukung image_url. "
+            "Kirim prompt teks saja. Set VLM_IMAGE_SUPPORT=true jika didukung."
+        )
+        content = prompt
     payload = {
         "model": model,
         "temperature": temperature,
+        "stream": False,
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
+                "content": content,
             }
         ],
     }
-
-    resp = requests.post(ollama_url, json=payload, timeout=timeout)
-    resp.raise_for_status()
+    resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(
+            f"VLM error {resp.status_code} for {endpoint}: {resp.text}"
+        )
     data = resp.json()
-
-    # Format OpenAI-compatible: choices[0].message.content
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Unexpected response from Ollama: {data}") from e
+        raise RuntimeError(f"Unexpected response from VLM: {data}") from e
 
 
 def process_pdf_with_vlm(
     pdf_path: str,
-    ollama_url: str,
+    base_url: str,
+    api_key: str | None,
     model: str,
     language: str = "id",
     dpi: int = 144,
@@ -168,8 +211,9 @@ def process_pdf_with_vlm(
     Proses PDF dengan VLM dan kembalikan teks Markdown gabungan.
 
     :param pdf_path: Path ke PDF
-    :param ollama_url: URL endpoint Ollama /v1/chat/completions
-    :param model: Nama model VLM di Ollama
+    :param base_url: Base URL endpoint OpenAI-compatible
+    :param api_key: API key untuk endpoint (opsional untuk lokal)
+    :param model: Nama model VLM
     :param language: "id" atau "en"
     :param dpi: Resolusi render PDF -> image
     :param max_pages: Batas maksimal halaman (untuk testing). None = semua halaman.
@@ -200,8 +244,9 @@ def process_pdf_with_vlm(
         prompt = build_prompt(page_num, total_pages, language=language)
 
         try:
-            content_md = call_ollama_vlm(
-                ollama_url=ollama_url,
+            content_md = call_vlm(
+                base_url=base_url,
+                api_key=api_key,
                 model=model,
                 prompt=prompt,
                 image_data_url=data_url,
@@ -218,7 +263,7 @@ def process_pdf_with_vlm(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ekstraksi & penjelasan konten PDF per halaman dengan Ollama VLM."
+        description="Ekstraksi & penjelasan konten PDF per halaman dengan VLM (OpenAI-compatible)."
     )
     parser.add_argument("pdf_path", help="Path ke file PDF yang akan diproses.")
     parser.add_argument(
@@ -227,15 +272,22 @@ def parse_args() -> argparse.Namespace:
         help="Path file output Markdown (jika tidak diisi, hasil akan dicetak ke stdout).",
     )
     parser.add_argument(
+        "--base-url",
         "--ollama-url",
-        default="http://localhost:11434/v1/chat/completions",
-        help="URL endpoint Ollama /v1/chat/completions "
-        "(default: http://localhost:11434/v1/chat/completions)",
+        dest="base_url",
+        default=os.getenv("DEEPSEEK_BASE_URL", "http://localhost:11434"),
+        help="Base URL endpoint OpenAI-compatible "
+        "(default: DEEPSEEK_BASE_URL atau http://localhost:11434)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("DEEPSEEK_API_KEY"),
+        help="API key untuk endpoint (default: DEEPSEEK_API_KEY).",
     )
     parser.add_argument(
         "--model",
-        default="qwen3-vl:2b-instruct-q4_K_M",
-        help="Nama model Ollama VLM (default: qwen3-vl:2b-instruct-q4_K_M).",
+        default="deepseek-vl:7b",
+        help="Nama model VLM (default: deepseek-vl:7b).",
     )
     parser.add_argument(
         "--language",
@@ -266,7 +318,8 @@ def main() -> None:
 
     markdown = process_pdf_with_vlm(
         pdf_path=args.pdf_path,
-        ollama_url=args.ollama_url,
+        base_url=args.base_url,
+        api_key=args.api_key,
         model=args.model,
         language=args.language,
         dpi=args.dpi,
