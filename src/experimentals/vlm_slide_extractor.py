@@ -14,8 +14,8 @@ Dependensi:
 
 Contoh pemakaian:
     python pdf_vlm_extractor.py input.pdf -o output.md \
-        --model deepseek-vl:7b \
-        --base-url https://api.deepseek.com
+        --model qwen3-vl:2b-instruct-q4_K_M \
+        --base-url http://localhost:11434
 """
 
 import argparse
@@ -132,7 +132,7 @@ def _resolve_api_key(api_key: str | None, base_url: str) -> str:
         return api_key
     if _is_local_endpoint(base_url):
         return "ollama"
-    raise RuntimeError("DEEPSEEK_API_KEY belum di-set untuk endpoint non-lokal.")
+    raise RuntimeError("VLM_API_KEY belum di-set untuk endpoint non-lokal.")
 
 
 def call_vlm(
@@ -147,9 +147,9 @@ def call_vlm(
     """
     Memanggil VLM dengan API OpenAI-compatible.
 
-    :param base_url: Base URL endpoint, misal "https://api.deepseek.com"
+    :param base_url: Base URL endpoint, misal "https://api.example.com"
     :param api_key: API key untuk endpoint (opsional untuk lokal)
-    :param model: Nama model VLM, misal "deepseek-vl:7b"
+    :param model: Nama model VLM, misal "qwen3-vl:2b-instruct-q4_K_M"
     :param prompt: Teks prompt
     :param image_data_url: Data URL base64 untuk gambar
     :param temperature: Suhu sampling
@@ -275,19 +275,19 @@ def parse_args() -> argparse.Namespace:
         "--base-url",
         "--ollama-url",
         dest="base_url",
-        default=os.getenv("DEEPSEEK_BASE_URL", "http://localhost:11434"),
+        default=os.getenv("VLM_BASE_URL", "http://localhost:11434"),
         help="Base URL endpoint OpenAI-compatible "
-        "(default: DEEPSEEK_BASE_URL atau http://localhost:11434)",
+        "(default: VLM_BASE_URL atau http://localhost:11434)",
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("DEEPSEEK_API_KEY"),
-        help="API key untuk endpoint (default: DEEPSEEK_API_KEY).",
+        default=os.getenv("VLM_API_KEY"),
+        help="API key untuk endpoint (default: VLM_API_KEY).",
     )
     parser.add_argument(
         "--model",
-        default="deepseek-vl:7b",
-        help="Nama model VLM (default: deepseek-vl:7b).",
+        default=os.getenv("VLM_MODEL", "qwen3-vl:2b-instruct-q4_K_M"),
+        help="Nama model VLM (default: VLM_MODEL atau qwen3-vl:2b-instruct-q4_K_M).",
     )
     parser.add_argument(
         "--language",

@@ -5,6 +5,7 @@ import io
 import logging
 import os
 from pathlib import Path
+import json
 import re
 from typing import Iterable, List, Tuple
 
@@ -26,58 +27,77 @@ except ImportError as exc:  # pragma: no cover - guarded for runtime safety
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VLM_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or os.getenv(
+DEFAULT_VLM_BASE_URL = os.getenv("VLM_BASE_URL") or os.getenv(
     "OLLAMA_URL", "http://localhost:11434"
 )
-DEFAULT_VLM_MODEL = os.getenv("DEEPSEEK_VLM_MODEL") or os.getenv(
+DEFAULT_VLM_MODEL = os.getenv("VLM_MODEL") or os.getenv(
     "OLLAMA_VLM_MODEL", "qwen3-vl:2b-instruct-q4_K_M"
 )
-DEFAULT_VLM_API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("VLM_API_KEY")
+DEFAULT_VLM_API_KEY = os.getenv("VLM_API_KEY")
 DEFAULT_VLM_IMAGE_SUPPORT = (
     os.getenv("VLM_IMAGE_SUPPORT", "").lower() in {"1", "true", "yes"}
 )
 DEFAULT_DPI = int(os.getenv("INGESTION_PDF_DPI", "144"))
 
 SYSTEM_PROMPT = PromptTemplate(
-    "Anda berperan sebagai Analis Keuangan.\n\n"
-    "Tugas Utama:\n"
-    "- Melakukan analisis berbasis konten visual dari sebuah slide presentasi.\n"
-    "- Analisis hanya boleh merujuk pada teks, angka, tabel, grafik, dan daftar yang terlihat pada slide.\n"
-    "- Dilarang menambahkan asumsi, inferensi ekonomi, atau opini di luar informasi eksplisit pada slide.\n"
-    "- Abaikan elemen non-informatif seperti ornamen, dekorasi, ikon/logo, dan latar visual.\n"
-    "- Jika terdapat elemen yang tidak terbaca, kosong, atau terpotong, lewati tanpa menebak.\n"
-    "- Gunakan gaya deskriptif formal, faktual, akurat, dan tanpa opini.\n\n"
-    "Catatan Penggunaan:\n"
-    "Output ini ditujukan untuk calon investor yang membutuhkan pembacaan cepat, padat, dan aktual.\n\n"
-    "Format Keluaran (Markdown, Bahasa Indonesia):\n\n"
-    "## (Judul Slide)\n"
-    "Aturan Judul:\n"
-    "- Jika slide memiliki judul eksplisit, gunakan judul tersebut apa adanya.\n"
-    "- Jika tidak ada judul eksplisit, buat frasa deskriptif ringkas (≤ 10 kata) yang menggambarkan konten tanpa opini.\n\n"
-    "### Ringkasan\n"
-    "Aturan Ringkasan:\n"
-    "- Berisi 3 hingga 7 kalimat faktual yang menggambarkan isi slide.\n"
-    "- Boleh memanfaatkan bullet jika diperlukan untuk kejelasan.\n"
-    "- Tidak ada penjelasan dengan makna yang berulang.\n"
-    "- Tidak boleh menambah interpretasi, asumsi, maupun penilaian.\n\n"
-    "### Konten\n"
-    "Aturan Konten:\n"
-    "- Konten wajib dipisahkan berdasarkan jenis data pada slide.\n"
-    "- Jika terdapat lebih dari satu jenis (misalnya tabel, grafik, dan daftar), setiap jenis harus disajikan pada segmen terpisah.\n"
-    "- Setiap segmen menggunakan heading 4 (####) dengan nama sesuai jenis konten, misalnya: '#### Tabel Penjualan', '#### Grafik Pertumbuhan', atau '#### Daftar Poin'.\n"
-    "- Untuk tabel: tulis ulang ke tabel Markdown sesuai struktur yang terlihat.\n"
-    "- Untuk grafik: jika dapat dikonversi ke tabel angka, lakukan; jika tidak memungkinkan, gambarkan secara tekstual yang menjelaskan sumbu, label, dan nilai yang terlihat.\n"
-    "- Untuk daftar/bullet: tulis ulang dalam format bullet Markdown.\n"
-    "- Jika terdapat konten yang tidak dapat dibaca atau kosong, lewati tanpa membuat spekulasi.'\n"
-    "- Selain dari tabel, grafik, dan daftar, jika terdapat gambar (gambar manusia, tumbuhan, dsb) jangan buat penjelasan tambahan.\n\n"
-)
+    "Anda berperan sebagai Analis Keuangan yang bertugas mengekstraksi isi slide untuk keperluan RAG indexing.\n"
+    "Output akan digunakan oleh sistem QA berbasis pgvector, sehingga harus faktual, self-contained, dan bebas opini.\n\n"
 
+    "=== ATURAN UMUM ===\n"
+    "- Analisis hanya berdasarkan teks, angka, tabel, grafik, dan daftar yang terlihat.\n"
+    "- Abaikan elemen non-informatif seperti ornamen, dekorasi, ikon/logo, foto manusia, ekspresi, suasana, warna latar, dan estetika visual.\n"
+    "- Dilarang menebak atau menambah informasi yang tidak tertulis secara eksplisit.\n"
+    "- Jika terdapat bagian yang tidak terbaca, kosong, atau terpotong, lewati tanpa menebak.\n"
+    "- Gunakan bahasa formal, faktual, deskriptif, dan tanpa opini.\n"
+    "- Dilarang menggunakan format JSON, objek, atau struktur key-value.\n\n"
+
+    "=== MODE RAG ALIGNMENT ===\n"
+    "- Output harus dapat berdiri sendiri (self-contained) tanpa melihat slide.\n"
+    "- Hindari frasa seperti 'slide ini', 'gambar di atas', 'lihat di bawah', atau referensi relatif lainnya.\n"
+    "- Jika terdapat nama perusahaan, periode, satuan (miliar, triliun, persen, USD, IDR), tulis secara eksplisit.\n"
+    "- Prioritaskan data finansial, bisnis, operasional, dan tatakelola.\n"
+    "- Jika slide berupa cover/poster non-informasional, tuliskan sebagai slide pembuka dan jangan mendeskripsikan foto/visual.\n\n"
+
+    "=== FORMAT OUTPUT MARKDOWN WAJIB ===\n"
+    "## Judul Slide\n\n"
+    "### Ringkasan\n"
+    "- Maksimal 7 kalimat, boleh menggunakan bullet.\n"
+    "- Hanya memuat konten yang relevan secara finansial, bisnis, operasional, atau informasi presentasi.\n"
+    "- Dilarang menjelaskan visual (misalnya foto, ekspresi, pakaian, suasana, warna latar, tata letak).\n"
+    "- Jika slide merupakan cover/poster tanpa konten finansial: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
+    "### Konten\n"
+    "- Bagian 'Konten' wajib berisi pengulangan isi utama slide (teks, angka, tabel, grafik, daftar) dalam bentuk Markdown.\n"
+    "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.' tanpa membuat segmen lain.\n"
+    "- Jika hanya terdapat 1 jenis data (misalnya hanya paragraf, hanya daftar, atau hanya tabel), tampilkan langsung tanpa heading tambahan.\n"
+    "- Jika terdapat >1 jenis data (misalnya tabel + daftar atau grafik + tabel), buat segmen per jenis menggunakan heading 4 (####).\n"
+    "- Dilarang membuat segmen untuk konten yang tidak ada (misalnya 'Tidak ada tabel').\n"
+    "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
+    "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
+    "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
+    "- Untuk disclaimer: tulis ulang isi teksnya.\n\n"
+
+    "=== MODE FINANCIAL PRIORITY ALIGNMENT ===\n"
+    "- Prioritaskan ekstraksi kategori berikut jika tersedia:\n"
+    "  * metrik finansial: pendapatan, laba, EBITDA, margin, capex, dividen, guidance\n"
+    "  * komparatif: YoY, QoQ, persen, rasio\n"
+    "  * entitas: perusahaan, unit bisnis, produk\n"
+    "  * periode: tahun, kuartal, bulan\n"
+    "  * operasional: produksi, kapasitas, volume, ESG\n"
+    "  * event: Public Expose, RUPS, Analyst Meeting\n\n"
+
+    "=== MODE ANTI-HALLUCINATION ===\n"
+    "- Jika informasi tidak terlihat → jangan tulis.\n"
+    "- Jika angka/rincian tidak jelas → lewati tanpa mengisi.\n"
+    "- Dilarang menulis opini atau spekulasi.\n"
+    "- Dilarang mengarang konteks.\n"
+)
 
 USER_PROMPT = PromptTemplate(
     "Dokumen: {document_name}\n"
     "Jenis Dokumen: {document_type}\n"
     "Emiten: {issuer_name} ({issuer_code})\n"
     "Tahun: {document_year}\n"
+    "Metadata Dokumen: {document_metadata}\n"
     "Slide: {slide_no} dari {total_pages}\n\n"
     "{slide_content}"
 )
@@ -129,7 +149,7 @@ def _resolve_api_key(base_url: str) -> str:
     if _is_local_endpoint(base_url):
         return "ollama"
     raise RuntimeError(
-        "DEEPSEEK_API_KEY belum di-set untuk endpoint VLM non-lokal."
+        "VLM_API_KEY belum di-set untuk endpoint VLM non-lokal."
     )
 
 
@@ -141,7 +161,7 @@ def _call_vlm(
     user_prompt: str,
     image_data_url: str,
     temperature: float = 0.2,
-    timeout: int = 300,
+    timeout: int = 600,
 ) -> str:
     endpoint = _resolve_endpoint(base_url)
     api_key = _resolve_api_key(base_url)
@@ -163,7 +183,6 @@ def _call_vlm(
         content = f"image: {image_data_url}\n\nprompt: {user_prompt}"
     payload = {
         "model": model,
-        "temperature": temperature,
         "stream": False,
         "messages": [
             {
@@ -175,6 +194,12 @@ def _call_vlm(
                 "content": content,
             }
         ],
+         "options": {
+            "temperature": temperature,
+            "top_p": 0.9,
+            "repeat_penalty": 1.2,
+            "num_predict": 256
+        }
     }
     resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
     if not resp.ok:
@@ -265,6 +290,11 @@ def _process_document(
         document_name = doc.name or pdf_path.name
         document_year = _extract_year(doc, pdf_path)
         document_type = _infer_document_type(doc, pdf_path)
+        document_metadata = (
+            json.dumps(doc.document_metadata, ensure_ascii=True, sort_keys=True)
+            if doc.document_metadata
+            else "-"
+        )
 
         existing = _count_existing_slides(session, document_id)
         if existing > 0:
@@ -292,6 +322,7 @@ def _process_document(
                 issuer_code=issuer_code,
                 document_year=document_year,
                 document_type=document_type,
+                document_metadata=document_metadata,
                 slide_no=slide_no,
                 total_pages=total_pages,
                 slide_content="Gambar terlampir.",
