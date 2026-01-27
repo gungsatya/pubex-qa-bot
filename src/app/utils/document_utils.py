@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import Generator, Tuple
 
 import fitz  # PyMuPDF
+from PIL import Image
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +38,42 @@ def get_pdf_page_count(path: Path) -> int | None:
         return None
 
 
-def pdf_to_images(pdf_path: Path, dpi: int) -> List[Tuple[int, bytes]]:
-    images: List[Tuple[int, bytes]] = []
-    zoom = dpi / 72.0
-    matrix = fitz.Matrix(zoom, zoom)
+def count_pdf_pages(pdf_path: Path) -> int:
+    """
+    Mengembalikan jumlah halaman PDF tanpa merender semuanya.
+    Hemat memori, hanya baca metadata.
+    """
+    with fitz.open(pdf_path) as doc:
+        return doc.page_count
+
+
+def pdf_to_images(
+    pdf_path: Path,
+    dpi: int = 150,
+) -> Generator[Tuple[int, bytes], None, None]:
+    """
+    Generator: mengubah PDF menjadi image per halaman, satu per satu.
+
+    Yields:
+        (slide_no, image_bytes_png)
+    """
+    zoom = dpi / 72.0  # PDF default 72 dpi
+    mat = fitz.Matrix(zoom, zoom)
 
     with fitz.open(pdf_path) as doc:
-        for page_index in range(len(doc)):
-            page = doc[page_index]
-            pix = page.get_pixmap(matrix=matrix)
-            img_bytes = pix.tobytes("png")
-            images.append((page_index + 1, img_bytes))
+        for page_index in range(doc.page_count):
+            page = doc.load_page(page_index)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
 
-    return images
+            # Konversi ke PNG bytes
+            img = Image.frombytes(
+                "RGB",
+                [pix.width, pix.height],
+                pix.samples,
+            )
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+
+            slide_no = page_index + 1
+            yield slide_no, img_bytes

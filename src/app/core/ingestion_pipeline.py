@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import requests
 from sqlalchemy import select, func
 
-from app.utils.document_utils import pdf_to_images
+from app.utils.document_utils import pdf_to_images, count_pdf_pages
 from app.utils.image_utils import validate_image_bytes
 from app.db.models import Document, Slide
 from app.db.session import get_session
@@ -29,61 +29,7 @@ except ImportError as exc:  # pragma: no cover - guarded for runtime safety
 logger = logging.getLogger(__name__)
 DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
-
-# PROMPT = PromptTemplate(
-#     "Anda adalah Analis Keuangan yang mengekstraksi isi slide untuk sistem Tanya Jawab berbasis RAG. "
-#     "Output harus faktual, self-contained, relevan finansial/bisnis, dan hanya berupa Markdown.\n\n"
-
-#     "ATURAN UTAMA:\n"
-#     "- Analisis hanya berdasarkan teks, angka, tabel, grafik, atau daftar yang terlihat.\n"
-#     "- Abaikan visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
-#     "- Tidak boleh menebak, menambah, menyimpulkan, atau beropini.\n"
-#     "- Jika bagian tidak terbaca/tidak jelas → lewati tanpa menebak.\n"
-#     "- Dilarang memasukkan metadata atau JSON ke dalam output.\n\n"
-
-#     "OUTPUT MARKDOWN WAJIB:\n"
-#     "## Judul Slide\n"
-#     "- Jika ada judul di slide, gunakan apa adanya.\n"
-#     "- Jika tidak ada, buat frasa deskriptif ≤10 kata tanpa opini.\n\n"
-
-#     "### Ringkasan\n"
-#     "- Maksimal 7 kalimat (atau bullet).\n"
-#     "- Hanya informasi finansial/bisnis/operasional atau informasi presentasi.\n"
-#     "- Dilarang mendeskripsikan visual non-informatif.\n"
-#     "- Jika slide adalah cover/poster tanpa konten: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
-
-#     "### Konten\n"
-#     "- Berbentuk format Markdown"
-#     "- Hanya berisi informasi finansial/bisnis yang berasal dari slide, baik berupa teks, angka, tabel, grafik, daftar\n"
-#     "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.'.\n"
-#     "- Jika hanya terdapat 1 jenis data (misalnya hanya paragraf, hanya daftar, atau hanya tabel), tampilkan langsung tanpa membuat segmen.\n"
-#     "- Jika terdapat >1 jenis data (misalnya ada 2 tabel, 1 daftar, 3 grafik; atau tabel, daftar dan grafik masing-masing satu), buat segmen per jenis menggunakan heading 4 (####).\n"
-#     "- Dilarang membuat segmen untuk konten yang tidak ada (misalnya 'Tidak ada tabel').\n"
-#     "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
-#     "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
-#     "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
-#     "- Untuk disclaimer: tulis ulang isi teksnya.\n\n"
-
-#     "MODE RAG:\n"
-#     "- Hasil harus bisa dipahami tanpa melihat slide.\n"
-#     "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
-#     "- Sebutkan eksplisit nama emiten, periode, dan satuan jika muncul (miliar, triliun, %, USD, IDR).\n"
-#     "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n\n"
-
-#     "ANTI-HALUSINASI:\n"
-#     "- Jika tidak terlihat → jangan ditulis.\n"
-#     "- Jika angka tidak jelas → lewati tanpa mengisi.\n"
-#     "- Tidak boleh menambah narasi konteks, lokasi, atau interpretasi yang tidak tertulis.\n\n"
-
-#     "METADATA DOKUMEN:\n"
-#     "Dokumen: {document_name}\n"
-#     "Jenis: {document_type}\n"
-#     "Emiten: {issuer_name} ({issuer_code})\n"
-#     "Tahun: {document_year}\n"
-#     "Metadata: {document_metadata}\n"
-#     "Slide: {slide_no} / {total_pages}\n\n"
-#     "{slide_content}"
-# )
+SESSION = requests.Session()
 
 PROMPT_PUBEX = PromptTemplate(
     "Anda adalah Konsultan Keuangan dan Kebijakan Perusahaan.\n"
@@ -138,7 +84,6 @@ PROMPT_PUBEX = PromptTemplate(
     "Dokumen: {document_name}\n"
     "Emiten: {issuer_name} ({issuer_code})\n"
     "Tahun: {document_year}\n"
-    "Metadata: {document_metadata}\n"
     "Slide: {slide_no} / {total_pages}\n\n"
 )
 
@@ -157,9 +102,11 @@ def _call_vlm(
             "prompt": prompt,
             "images": [base64.b64encode(image_bytes).decode("ascii")],
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": {
+                "temperature": temperature,
+            },
         }
-        response = requests.post(
+        response = SESSION.post(
             f"{base_url.rstrip('/')}/api/generate",
             json=payload,
             timeout=DEFAULT_OLLAMA_TIMEOUT,
@@ -240,8 +187,8 @@ def _process_document(
     model: str,
     dpi: int,
 ) -> bool:
-    images = pdf_to_images(pdf_path, dpi=dpi)
-    total_pages = len(images)
+    
+    total_pages = count_pdf_pages(pdf_path)
     if total_pages == 0:
         logger.warning("PDF kosong: %s", pdf_path)
         return False
@@ -275,7 +222,10 @@ def _process_document(
             )
             session.commit()
 
-        for slide_no, img_bytes in images:
+        slide_dir = pdf_path.parent / "slides" / document_id
+        slide_dir.mkdir(parents=True, exist_ok=True)
+
+        for slide_no, img_bytes in pdf_to_images(pdf_path, dpi=dpi):
             if not validate_image_bytes(img_bytes, slide_no):
                 success = False
                 continue
@@ -287,7 +237,6 @@ def _process_document(
                 document_year=document_year,
                 document_metadata=document_metadata,
                 slide_no=slide_no,
-                total_pages=total_pages
             ) if document_type == "pubex" else ""
 
             start_at = datetime.now(timezone.utc)
@@ -308,10 +257,13 @@ def _process_document(
                 success = False
                 continue
 
+            image_path = slide_dir / f"{slide_no:03}.png"
+            image_path.write_bytes(img_bytes)
+
             slide = Slide(
                 document_id=document_id,
                 content_text=content_md.strip(),
-                content_base_64=base64.b64encode(img_bytes).decode("ascii"),
+                image_path=str(image_path),
                 slide_metadata={
                     "slide_no": slide_no,
                     "total_pages": total_pages,

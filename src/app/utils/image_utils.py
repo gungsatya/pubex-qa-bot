@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import base64
 import io
 import logging
+from pathlib import Path
 
 from PIL import Image
 
@@ -18,10 +18,11 @@ def validate_image_bytes(img_bytes: bytes, page_no: int) -> bool:
         return False
 
 
-def decode_image_base64(content_base_64: str | None) -> bytes | None:
-    if not content_base_64:
+def load_slide_image_bytes(image_path: str | None) -> bytes | None:
+    if not image_path:
         return None
     try:
-        return base64.b64decode(content_base_64)
-    except (ValueError, TypeError):
+        return Path(image_path).read_bytes()
+    except OSError:
+        logger.warning("Gagal membaca image slide dari path: %s", image_path)
         return None

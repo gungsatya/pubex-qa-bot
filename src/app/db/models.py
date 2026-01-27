@@ -227,9 +227,9 @@ class Slide(Base):
         Vector(EMBEDDING_DIM),
         nullable=True,
     )
-    content_base_64: Mapped[Optional[str]] = mapped_column(
-        Text,
-        nullable=True,
+    image_path: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
     )
     # Kolom DB tetap "metadata", attribute Python = slide_metadata
     slide_metadata: Mapped[Optional[dict]] = mapped_column(

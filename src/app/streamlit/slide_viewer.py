@@ -5,7 +5,7 @@ from sqlalchemy import select, func, cast, Integer
 
 from app.db.models import Slide, Document
 from app.db.session import get_session
-from app.utils.image_utils import decode_image_base64
+from app.utils.image_utils import load_slide_image_bytes
 
 PAGE_SIZE_DEFAULT = 10
 
@@ -42,7 +42,7 @@ def _fetch_slides(
                 Slide.id,
                 Slide.document_id,
                 Slide.content_text,
-                Slide.content_base_64,
+                Slide.image_path,
                 Slide.slide_metadata,
                 Slide.ingestion_start_at,
                 Slide.ingestion_end_at,
@@ -71,7 +71,7 @@ def _fetch_slides(
                 "document_id": row.document_id,
                 "document_name": row.name,
                 "content_text": row.content_text,
-                "content_base_64": row.content_base_64,
+                "image_path": row.image_path,
                 "slide_metadata": row.slide_metadata,
                 "ingestion_start_at": row.ingestion_start_at,
                 "ingestion_end_at": row.ingestion_end_at,
@@ -174,7 +174,7 @@ def main() -> None:
             st.markdown(slide["content_text"] or "(kosong)")
 
         with right_col:
-            img_bytes = decode_image_base64(slide["content_base_64"])
+            img_bytes = load_slide_image_bytes(slide["image_path"])
             if img_bytes:
                 st.image(img_bytes, caption="Slide Image", width=500)
             else:
