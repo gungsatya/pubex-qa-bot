@@ -6,11 +6,10 @@ import os
 from pathlib import Path
 import json
 import re
-import tempfile
 from typing import Iterable
 from datetime import datetime, timezone
 
-from ollama import chat
+import requests
 from sqlalchemy import select, func
 
 from app.utils.document_utils import pdf_to_images
@@ -28,59 +27,119 @@ except ImportError as exc:  # pragma: no cover - guarded for runtime safety
     ) from exc
 
 logger = logging.getLogger(__name__)
+DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
 
-PROMPT = PromptTemplate(
-    "Anda adalah Analis Keuangan yang mengekstraksi isi slide untuk sistem Tanya Jawab berbasis RAG. "
-    "Output harus faktual, self-contained, relevan finansial/bisnis, dan hanya berupa Markdown.\n\n"
+# PROMPT = PromptTemplate(
+#     "Anda adalah Analis Keuangan yang mengekstraksi isi slide untuk sistem Tanya Jawab berbasis RAG. "
+#     "Output harus faktual, self-contained, relevan finansial/bisnis, dan hanya berupa Markdown.\n\n"
 
-    "ATURAN UTAMA:\n"
-    "- Analisis hanya berdasarkan teks, angka, tabel, grafik, atau daftar yang terlihat.\n"
-    "- Abaikan visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
-    "- Tidak boleh menebak, menambah, menyimpulkan, atau beropini.\n"
+#     "ATURAN UTAMA:\n"
+#     "- Analisis hanya berdasarkan teks, angka, tabel, grafik, atau daftar yang terlihat.\n"
+#     "- Abaikan visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
+#     "- Tidak boleh menebak, menambah, menyimpulkan, atau beropini.\n"
+#     "- Jika bagian tidak terbaca/tidak jelas → lewati tanpa menebak.\n"
+#     "- Dilarang memasukkan metadata atau JSON ke dalam output.\n\n"
+
+#     "OUTPUT MARKDOWN WAJIB:\n"
+#     "## Judul Slide\n"
+#     "- Jika ada judul di slide, gunakan apa adanya.\n"
+#     "- Jika tidak ada, buat frasa deskriptif ≤10 kata tanpa opini.\n\n"
+
+#     "### Ringkasan\n"
+#     "- Maksimal 7 kalimat (atau bullet).\n"
+#     "- Hanya informasi finansial/bisnis/operasional atau informasi presentasi.\n"
+#     "- Dilarang mendeskripsikan visual non-informatif.\n"
+#     "- Jika slide adalah cover/poster tanpa konten: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
+
+#     "### Konten\n"
+#     "- Berbentuk format Markdown"
+#     "- Hanya berisi informasi finansial/bisnis yang berasal dari slide, baik berupa teks, angka, tabel, grafik, daftar\n"
+#     "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.'.\n"
+#     "- Jika hanya terdapat 1 jenis data (misalnya hanya paragraf, hanya daftar, atau hanya tabel), tampilkan langsung tanpa membuat segmen.\n"
+#     "- Jika terdapat >1 jenis data (misalnya ada 2 tabel, 1 daftar, 3 grafik; atau tabel, daftar dan grafik masing-masing satu), buat segmen per jenis menggunakan heading 4 (####).\n"
+#     "- Dilarang membuat segmen untuk konten yang tidak ada (misalnya 'Tidak ada tabel').\n"
+#     "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
+#     "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
+#     "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
+#     "- Untuk disclaimer: tulis ulang isi teksnya.\n\n"
+
+#     "MODE RAG:\n"
+#     "- Hasil harus bisa dipahami tanpa melihat slide.\n"
+#     "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
+#     "- Sebutkan eksplisit nama emiten, periode, dan satuan jika muncul (miliar, triliun, %, USD, IDR).\n"
+#     "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n\n"
+
+#     "ANTI-HALUSINASI:\n"
+#     "- Jika tidak terlihat → jangan ditulis.\n"
+#     "- Jika angka tidak jelas → lewati tanpa mengisi.\n"
+#     "- Tidak boleh menambah narasi konteks, lokasi, atau interpretasi yang tidak tertulis.\n\n"
+
+#     "METADATA DOKUMEN:\n"
+#     "Dokumen: {document_name}\n"
+#     "Jenis: {document_type}\n"
+#     "Emiten: {issuer_name} ({issuer_code})\n"
+#     "Tahun: {document_year}\n"
+#     "Metadata: {document_metadata}\n"
+#     "Slide: {slide_no} / {total_pages}\n\n"
+#     "{slide_content}"
+# )
+
+PROMPT_PUBEX = PromptTemplate(
+    "Anda adalah Konsultan Keuangan dan Kebijakan Perusahaan.\n"
+    "Tugas Anda adalah mengekstraksi isi slide presentasi Public Expose (Pubex) untuk sistem Tanya Jawab berbasis RAG.\n\n"
+    
+    "*Public Expose* atau *Pubex* (paparan publik) adalah kegiatan wajib tahunan bagi emiten (perusahaan tercatat) di Bursa Efek Indonesia (BEI)\n" 
+    "untuk memaparkan kinerja keuangan, operasional, dan rencana bisnis kepada publik setidaknya sekali dalam setahun.\n"
+    "Tujuannya adalah memastikan transparansi informasi, meningkatkan kepercayaan investor, dan memperjelas prospek perusahaan.\n\n"
+    
+    "*ATURAN UMUM:*\n"
+    "- Analisis HANYA berdasarkan pada konten slide yang terlihat, termasuk teks, angka, tabel, grafik, atau daftar.\n"
+    "- ABAIKAN visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
+    "- TIDAK BOLEH menebak, menambah, menyimpulkan, atau beropini.\n"
     "- Jika bagian tidak terbaca/tidak jelas → lewati tanpa menebak.\n"
-    "- Dilarang memasukkan metadata atau JSON ke dalam output.\n\n"
-
-    "OUTPUT MARKDOWN WAJIB:\n"
-    "## Judul Slide\n"
-    "- Jika ada judul di slide, gunakan apa adanya.\n"
-    "- Jika tidak ada, buat frasa deskriptif ≤10 kata tanpa opini.\n\n"
-
-    "### Ringkasan\n"
-    "- Maksimal 7 kalimat (atau bullet).\n"
-    "- Hanya informasi finansial/bisnis/operasional atau informasi presentasi.\n"
-    "- Dilarang mendeskripsikan visual non-informatif.\n"
-    "- Jika slide adalah cover/poster tanpa konten: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
-
-    "### Konten\n"
-    "- Bagian 'Konten' wajib berisi pengulangan isi utama slide (teks, angka, tabel, grafik, daftar) dalam bentuk Markdown.\n"
-    "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.' tanpa membuat segmen lain.\n"
-    "- Jika hanya terdapat 1 jenis data (misalnya hanya paragraf, hanya daftar, atau hanya tabel), tampilkan langsung tanpa heading tambahan.\n"
-    "- Jika terdapat >1 jenis data (misalnya tabel + daftar atau grafik + tabel), buat segmen per jenis menggunakan heading 4 (####).\n"
-    "- Dilarang membuat segmen untuk konten yang tidak ada (misalnya 'Tidak ada tabel').\n"
-    "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
-    "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
-    "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
-    "- Untuk disclaimer: tulis ulang isi teksnya.\n\n"
-
-    "MODE RAG:\n"
     "- Hasil harus bisa dipahami tanpa melihat slide.\n"
     "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
     "- Sebutkan eksplisit nama emiten, periode, dan satuan jika muncul (miliar, triliun, %, USD, IDR).\n"
-    "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n\n"
+    "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n"
+    "- OUTPUT berupa Markdown berbahasa Indonesia.\n"
+    "- Gunakan gaya bahasa informatif, formal dan jelas.\n\n"
+    
+    "*OUTPUT MARKDOWN WAJIB:*\n"
+    "- Struktur output harus terdiri dari tiga bagian utama: (Judul Slide), Ringkasan, dan Konten.\n"
+    "- Output HARUS mengikuti aturan umum."
+    "- Judul slide disesuaikan dengan aturan yang telah ditentukan.\n\n"
+    
+    "Aturan Output :\n"
+    "## (Judul Slide) (Heading 2)\n"
+    "- Jika ada judul di slide, gunakan apa adanya.\n"
+    "- Jika tidak ada, buat frasa deskriptif ≤10 kata tanpa opini.\n\n"
+    
+    "### Ringkasan (Heading 3)\n"
+    "- Maksimal 20 kalimat yang dibuat menjadi paragraf.\n"
+    "- Masing-masing paragraf memiliki satu kesatuan topik.\n"
+    "- Hanya informasi finansial/bisnis/operasional atau informasi presentasi.\n"
+    "- Dilarang mendeskripsikan visual non-informatif.\n"
+    "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
+    "- Jika slide adalah cover/poster tanpa konten: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
+    
+    "### Konten (Heading 3)\n"
+    "- Hanya berisi informasi finansial/bisnis yang berasal dari paragraf, tabel, grafik, daftar pada slide\n"
+    "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.'.\n"
+    "- Jika hanya terdapat 1 jenis data (misalnya hanya paragraf, hanya daftar, atau hanya tabel), tampilkan langsung tanpa membuat segmen.\n"
+    "- Jika terdapat >1 jenis data (misalnya ada 2 tabel, 1 daftar, 3 grafik; atau tabel, daftar dan grafik masing-masing satu), buat segmen per jenis dengan judul sesuai topik konten menggunakan heading 4 (####).\n"
+    "- DILARANG membuat segmen jika tidak ada konten yang ditampilkan.\n"
+    "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
+    "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
+    "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
+    "- Untuk paragraf: tulis ulang isi teksnya.\n\n"
 
-    "ANTI-HALUSINASI:\n"
-    "- Jika tidak terlihat → jangan ditulis.\n"
-    "- Jika angka tidak jelas → lewati tanpa mengisi.\n"
-    "- Tidak boleh menambah narasi konteks, lokasi, atau interpretasi yang tidak tertulis.\n\n"
-
-    "METADATA DOKUMEN:\n"
+    "INFORMASI DOKUMEN:\n"
     "Dokumen: {document_name}\n"
-    "Jenis: {document_type}\n"
     "Emiten: {issuer_name} ({issuer_code})\n"
     "Tahun: {document_year}\n"
     "Metadata: {document_metadata}\n"
     "Slide: {slide_no} / {total_pages}\n\n"
-    "{slide_content}"
 )
 
 
@@ -88,30 +147,32 @@ def _call_vlm(
     *,
     model: str,
     prompt: str,
-    image_path: str,
+    image_bytes: bytes,
+    base_url: str = DEFAULT_OLLAMA_BASE_URL,
     temperature: float = 0.2,
 ) -> str:
     try:
-        response = chat(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [image_path],
-                },
-            ],
-            options={
-                "temperature": temperature,
-                "stream": False,
-            },
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "images": [base64.b64encode(image_bytes).decode("ascii")],
+            "stream": False,
+            "options": {"temperature": temperature},
+        }
+        response = requests.post(
+            f"{base_url.rstrip('/')}/api/generate",
+            json=payload,
+            timeout=DEFAULT_OLLAMA_TIMEOUT,
         )
+        response.raise_for_status()
+        data = response.json()
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"VLM error (ollama): {exc}") from exc
+        raise RuntimeError(f"VLM error (ollama generate): {exc}") from exc
+
     try:
-        return response["message"]["content"]
+        return data["response"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected response from VLM: {response}") from exc
+        raise RuntimeError(f"Unexpected response from VLM: {data}") from exc
 
 
 def _get_downloaded_documents(limit: int | None) -> Iterable[Document]:
@@ -139,6 +200,19 @@ def _count_existing_slides(session, document_id: str) -> int:
 def _extract_year(doc: Document, pdf_path: Path) -> str:
     if doc.publish_at:
         return str(doc.publish_at.year)
+    collection_metadata = doc.collection.collection_metadata if doc.collection else None
+    if isinstance(collection_metadata, dict):
+        year = collection_metadata.get("year")
+        if isinstance(year, int):
+            return str(year)
+        if isinstance(year, str) and year.strip():
+            return year.strip()
+    if isinstance(doc.document_metadata, dict):
+        year = doc.document_metadata.get("year")
+        if isinstance(year, int):
+            return str(year)
+        if isinstance(year, str) and year.strip():
+            return year.strip()
     candidates = f"{doc.name or ''} {pdf_path.name}"
     match = re.search(r"(19|20)\\d{2}", candidates)
     if match:
@@ -146,15 +220,17 @@ def _extract_year(doc: Document, pdf_path: Path) -> str:
     return "Tidak diketahui"
 
 
-def _infer_document_type(doc: Document, pdf_path: Path) -> str:
-    name = f"{doc.name or ''} {pdf_path.name}".lower()
-    if "laporan keuangan" in name or "financial statement" in name:
-        return "laporan keuangan"
-    if "annual report" in name:
-        return "laporan tahunan"
-    if "public expose" in name or "pubex" in name:
-        return "dokumen Public Expose (Pubex)"
-    return "dokumen keuangan"
+def _infer_document_type(doc: Document) -> str:
+    collection_metadata = doc.collection.collection_metadata if doc.collection else None
+    if isinstance(collection_metadata, dict):
+        doc_type = collection_metadata.get("type")
+        if isinstance(doc_type, str) and doc_type.strip():
+            return doc_type.strip().lower()
+    if isinstance(doc.document_metadata, dict):
+        doc_type = doc.document_metadata.get("type")
+        if isinstance(doc_type, str) and doc_type.strip():
+            return doc_type.strip().lower()
+    return "unknown"
 
 
 def _process_document(
@@ -180,7 +256,7 @@ def _process_document(
         issuer_code = doc.issuer.code if doc.issuer else "Tidak diketahui"
         document_name = doc.name or pdf_path.name
         document_year = _extract_year(doc, pdf_path)
-        document_type = _infer_document_type(doc, pdf_path)
+        document_type = _infer_document_type(doc)
         document_metadata = (
             json.dumps(doc.document_metadata, ensure_ascii=True, sort_keys=True)
             if doc.document_metadata
@@ -204,31 +280,22 @@ def _process_document(
                 success = False
                 continue
 
-            prompt = PROMPT.format(
+            prompt =  PROMPT_PUBEX.format(
                 document_name=document_name,
                 issuer_name=issuer_name,
                 issuer_code=issuer_code,
                 document_year=document_year,
-                document_type=document_type,
                 document_metadata=document_metadata,
                 slide_no=slide_no,
-                total_pages=total_pages,
-                slide_content="Gambar terlampir.",
-            )
+                total_pages=total_pages
+            ) if document_type == "pubex" else ""
 
-            tmp_path = None
             start_at = datetime.now(timezone.utc)
             try:
-                with tempfile.NamedTemporaryFile(
-                    suffix=".png", delete=False
-                ) as tmp_file:
-                    tmp_file.write(img_bytes)
-                    tmp_path = tmp_file.name
-
                 content_md = _call_vlm(
                     model=model,
                     prompt=prompt,
-                    image_path=tmp_path,
+                    image_bytes=img_bytes,
                 )
                 end_at = datetime.now(timezone.utc)
             except Exception as exc:  # noqa: BLE001
@@ -240,12 +307,6 @@ def _process_document(
                 )
                 success = False
                 continue
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        logger.debug("Gagal menghapus file sementara: %s", tmp_path)
 
             slide = Slide(
                 document_id=document_id,
@@ -279,6 +340,7 @@ def run_ingestion(
     model: str = DEFAULT_VLM_MODEL,
     dpi: int = DEFAULT_DPI,
 ) -> None:
+    start_at = datetime.now(timezone.utc)
     docs = _get_downloaded_documents(limit)
     if not docs:
         logger.info("Tidak ada dokumen berstatus downloaded.")
@@ -303,3 +365,10 @@ def run_ingestion(
             model=model,
             dpi=dpi,
         )
+
+    end_at = datetime.now(timezone.utc)
+    total_seconds = (end_at - start_at).total_seconds()
+    minutes = int(total_seconds // 60)
+    seconds = int(total_seconds % 60)
+    logger.info("Durasi ingestion total: %s menit %s detik", minutes, seconds)
+    print(f"Durasi ingestion total: {minutes} menit {seconds} detik")

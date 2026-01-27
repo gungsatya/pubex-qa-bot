@@ -8,9 +8,6 @@ psycopg2-binary==2.9.9
 # Migrations
 alembic==1.13.1
 
-# Embedding & LLM integration with Ollama
-ollama==0.4.8
-
 # Optional for pgvector storage (kalau nanti dipakai)
 pgvector==0.2.4
 
