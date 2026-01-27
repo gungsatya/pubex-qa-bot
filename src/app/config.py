@@ -10,3 +10,5 @@ if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+DEFAULT_VLM_MODEL = os.getenv("VLM_MODEL") or "qwen3-vl:2b-instruct-q4_K_M"
+DEFAULT_DPI = int(os.getenv("INGESTION_PDF_DPI", "144"))

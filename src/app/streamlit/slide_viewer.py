@@ -1,4 +1,3 @@
-import base64
 from typing import List, Dict, Any
 
 import streamlit as st
@@ -6,6 +5,7 @@ from sqlalchemy import select, func, cast, Integer
 
 from app.db.models import Slide, Document
 from app.db.session import get_session
+from app.utils.image_utils import decode_image_base64
 
 PAGE_SIZE_DEFAULT = 10
 
@@ -44,6 +44,8 @@ def _fetch_slides(
                 Slide.content_text,
                 Slide.content_base_64,
                 Slide.slide_metadata,
+                Slide.ingestion_start_at,
+                Slide.ingestion_end_at,
                 Slide.created_at,
                 Document.name,
             )
@@ -71,19 +73,12 @@ def _fetch_slides(
                 "content_text": row.content_text,
                 "content_base_64": row.content_base_64,
                 "slide_metadata": row.slide_metadata,
+                "ingestion_start_at": row.ingestion_start_at,
+                "ingestion_end_at": row.ingestion_end_at,
                 "created_at": row.created_at,
             }
         )
     return slides
-
-
-def _decode_image_bytes(content_base_64: str | None) -> bytes | None:
-    if not content_base_64:
-        return None
-    try:
-        return base64.b64decode(content_base_64)
-    except Exception:
-        return None
 
 
 def _init_state() -> None:
@@ -162,6 +157,16 @@ def main() -> None:
 
         left_col, right_col = st.columns([2, 1])
         with left_col:
+            ingestion_start = slide.get("ingestion_start_at")
+            ingestion_end = slide.get("ingestion_end_at")
+            if ingestion_start and ingestion_end:
+                duration_seconds = (ingestion_end - ingestion_start).total_seconds()
+                st.markdown(
+                    f"**ingestion_time**: {duration_seconds:.2f} detik"
+                )
+            else:
+                st.markdown("**ingestion_time**: (tidak tersedia)")
+
             st.markdown("**metadata**")
             st.json(slide["slide_metadata"] or {})
 
@@ -169,7 +174,7 @@ def main() -> None:
             st.markdown(slide["content_text"] or "(kosong)")
 
         with right_col:
-            img_bytes = _decode_image_bytes(slide["content_base_64"])
+            img_bytes = decode_image_base64(slide["content_base_64"])
             if img_bytes:
                 st.image(img_bytes, caption="Slide Image", width=500)
             else:

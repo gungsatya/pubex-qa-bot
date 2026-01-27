@@ -8,19 +8,14 @@ psycopg2-binary==2.9.9
 # Migrations
 alembic==1.13.1
 
-# Chainlit (frontend chat interface)
-chainlit==1.1.402
-
-# Embedding & LLM integration with Ollama (client REST)
-httpx==0.27.0
-pydantic==2.11.5
+# Embedding & LLM integration with Ollama
+ollama==0.4.8
 
 # Optional for pgvector storage (kalau nanti dipakai)
 pgvector==0.2.4
 
 # PDF and Slide processing (minimal)
 PyMuPDF==1.24.1   # alias "fitz", penting untuk extract slide/page
-pdf2image==1.17.0
 pillow==10.3.0
 
 # Utilities
@@ -29,6 +24,5 @@ requests==2.31.0
 llama-index-core==0.13.0
 llama-index-embeddings-ollama==0.8.6
 
-colorlog==6.8.2
 cloudscraper==1.2.71
 streamlit

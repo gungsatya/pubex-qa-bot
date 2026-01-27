@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import os
 from pathlib import Path
 import json
 import re
-from typing import Iterable, List, Tuple
+import tempfile
+from typing import Iterable
+from datetime import datetime, timezone
 
-import fitz  # PyMuPDF
-import requests
-from PIL import Image
+from ollama import chat
 from sqlalchemy import select, func
 
+from app.utils.document_utils import pdf_to_images
+from app.utils.image_utils import validate_image_bytes
 from app.db.models import Document, Slide
 from app.db.session import get_session
+from src.app.config import DEFAULT_DPI, DEFAULT_VLM_MODEL
 from src.data.enums import DocumentStatusEnum
 
 try:
@@ -27,44 +29,28 @@ except ImportError as exc:  # pragma: no cover - guarded for runtime safety
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VLM_BASE_URL = os.getenv("VLM_BASE_URL") or os.getenv(
-    "OLLAMA_URL", "http://localhost:11434"
-)
-DEFAULT_VLM_MODEL = os.getenv("VLM_MODEL") or os.getenv(
-    "OLLAMA_VLM_MODEL", "qwen3-vl:2b-instruct-q4_K_M"
-)
-DEFAULT_VLM_API_KEY = os.getenv("VLM_API_KEY")
-DEFAULT_VLM_IMAGE_SUPPORT = (
-    os.getenv("VLM_IMAGE_SUPPORT", "").lower() in {"1", "true", "yes"}
-)
-DEFAULT_DPI = int(os.getenv("INGESTION_PDF_DPI", "144"))
+PROMPT = PromptTemplate(
+    "Anda adalah Analis Keuangan yang mengekstraksi isi slide untuk sistem Tanya Jawab berbasis RAG. "
+    "Output harus faktual, self-contained, relevan finansial/bisnis, dan hanya berupa Markdown.\n\n"
 
-SYSTEM_PROMPT = PromptTemplate(
-    "Anda berperan sebagai Analis Keuangan yang bertugas mengekstraksi isi slide untuk keperluan RAG indexing.\n"
-    "Output akan digunakan oleh sistem QA berbasis pgvector, sehingga harus faktual, self-contained, dan bebas opini.\n\n"
+    "ATURAN UTAMA:\n"
+    "- Analisis hanya berdasarkan teks, angka, tabel, grafik, atau daftar yang terlihat.\n"
+    "- Abaikan visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
+    "- Tidak boleh menebak, menambah, menyimpulkan, atau beropini.\n"
+    "- Jika bagian tidak terbaca/tidak jelas → lewati tanpa menebak.\n"
+    "- Dilarang memasukkan metadata atau JSON ke dalam output.\n\n"
 
-    "=== ATURAN UMUM ===\n"
-    "- Analisis hanya berdasarkan teks, angka, tabel, grafik, dan daftar yang terlihat.\n"
-    "- Abaikan elemen non-informatif seperti ornamen, dekorasi, ikon/logo, foto manusia, ekspresi, suasana, warna latar, dan estetika visual.\n"
-    "- Dilarang menebak atau menambah informasi yang tidak tertulis secara eksplisit.\n"
-    "- Jika terdapat bagian yang tidak terbaca, kosong, atau terpotong, lewati tanpa menebak.\n"
-    "- Gunakan bahasa formal, faktual, deskriptif, dan tanpa opini.\n"
-    "- Dilarang menggunakan format JSON, objek, atau struktur key-value.\n\n"
+    "OUTPUT MARKDOWN WAJIB:\n"
+    "## Judul Slide\n"
+    "- Jika ada judul di slide, gunakan apa adanya.\n"
+    "- Jika tidak ada, buat frasa deskriptif ≤10 kata tanpa opini.\n\n"
 
-    "=== MODE RAG ALIGNMENT ===\n"
-    "- Output harus dapat berdiri sendiri (self-contained) tanpa melihat slide.\n"
-    "- Hindari frasa seperti 'slide ini', 'gambar di atas', 'lihat di bawah', atau referensi relatif lainnya.\n"
-    "- Jika terdapat nama perusahaan, periode, satuan (miliar, triliun, persen, USD, IDR), tulis secara eksplisit.\n"
-    "- Prioritaskan data finansial, bisnis, operasional, dan tatakelola.\n"
-    "- Jika slide berupa cover/poster non-informasional, tuliskan sebagai slide pembuka dan jangan mendeskripsikan foto/visual.\n\n"
-
-    "=== FORMAT OUTPUT MARKDOWN WAJIB ===\n"
-    "## Judul Slide\n\n"
     "### Ringkasan\n"
-    "- Maksimal 7 kalimat, boleh menggunakan bullet.\n"
-    "- Hanya memuat konten yang relevan secara finansial, bisnis, operasional, atau informasi presentasi.\n"
-    "- Dilarang menjelaskan visual (misalnya foto, ekspresi, pakaian, suasana, warna latar, tata letak).\n"
-    "- Jika slide merupakan cover/poster tanpa konten finansial: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
+    "- Maksimal 7 kalimat (atau bullet).\n"
+    "- Hanya informasi finansial/bisnis/operasional atau informasi presentasi.\n"
+    "- Dilarang mendeskripsikan visual non-informatif.\n"
+    "- Jika slide adalah cover/poster tanpa konten: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
+
     "### Konten\n"
     "- Bagian 'Konten' wajib berisi pengulangan isi utama slide (teks, angka, tabel, grafik, daftar) dalam bentuk Markdown.\n"
     "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.' tanpa membuat segmen lain.\n"
@@ -76,150 +62,56 @@ SYSTEM_PROMPT = PromptTemplate(
     "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
     "- Untuk disclaimer: tulis ulang isi teksnya.\n\n"
 
-    "=== MODE FINANCIAL PRIORITY ALIGNMENT ===\n"
-    "- Prioritaskan ekstraksi kategori berikut jika tersedia:\n"
-    "  * metrik finansial: pendapatan, laba, EBITDA, margin, capex, dividen, guidance\n"
-    "  * komparatif: YoY, QoQ, persen, rasio\n"
-    "  * entitas: perusahaan, unit bisnis, produk\n"
-    "  * periode: tahun, kuartal, bulan\n"
-    "  * operasional: produksi, kapasitas, volume, ESG\n"
-    "  * event: Public Expose, RUPS, Analyst Meeting\n\n"
+    "MODE RAG:\n"
+    "- Hasil harus bisa dipahami tanpa melihat slide.\n"
+    "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
+    "- Sebutkan eksplisit nama emiten, periode, dan satuan jika muncul (miliar, triliun, %, USD, IDR).\n"
+    "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n\n"
 
-    "=== MODE ANTI-HALLUCINATION ===\n"
-    "- Jika informasi tidak terlihat → jangan tulis.\n"
-    "- Jika angka/rincian tidak jelas → lewati tanpa mengisi.\n"
-    "- Dilarang menulis opini atau spekulasi.\n"
-    "- Dilarang mengarang konteks.\n"
-)
+    "ANTI-HALUSINASI:\n"
+    "- Jika tidak terlihat → jangan ditulis.\n"
+    "- Jika angka tidak jelas → lewati tanpa mengisi.\n"
+    "- Tidak boleh menambah narasi konteks, lokasi, atau interpretasi yang tidak tertulis.\n\n"
 
-USER_PROMPT = PromptTemplate(
+    "METADATA DOKUMEN:\n"
     "Dokumen: {document_name}\n"
-    "Jenis Dokumen: {document_type}\n"
+    "Jenis: {document_type}\n"
     "Emiten: {issuer_name} ({issuer_code})\n"
     "Tahun: {document_year}\n"
-    "Metadata Dokumen: {document_metadata}\n"
-    "Slide: {slide_no} dari {total_pages}\n\n"
+    "Metadata: {document_metadata}\n"
+    "Slide: {slide_no} / {total_pages}\n\n"
     "{slide_content}"
 )
 
 
-
-
-
-def _pdf_to_images(pdf_path: Path, dpi: int) -> List[Tuple[int, bytes]]:
-    doc = fitz.open(pdf_path)
-    images: List[Tuple[int, bytes]] = []
-
-    zoom = dpi / 72.0
-    matrix = fitz.Matrix(zoom, zoom)
-
-    for page_index in range(len(doc)):
-        page = doc[page_index]
-        pix = page.get_pixmap(matrix=matrix)
-        img_bytes = pix.tobytes("png")
-        images.append((page_index + 1, img_bytes))
-
-    doc.close()
-    return images
-
-
-def _image_bytes_to_data_url(img_bytes: bytes) -> str:
-    b64 = base64.b64encode(img_bytes).decode("ascii")
-    return f"data:image/png;base64,{b64}"
-
-
-def _resolve_endpoint(base_url: str) -> str:
-    base_url = base_url.rstrip("/")
-    if base_url.endswith("/chat/completions") or base_url.endswith(
-        "/v1/chat/completions"
-    ):
-        return base_url
-    if "localhost" in base_url or "127.0.0.1" in base_url:
-        return f"{base_url}/v1/chat/completions"
-    return f"{base_url}/chat/completions"
-
-
-def _is_local_endpoint(base_url: str) -> bool:
-    return "localhost" in base_url or "127.0.0.1" in base_url
-
-
-def _resolve_api_key(base_url: str) -> str:
-    if DEFAULT_VLM_API_KEY:
-        return DEFAULT_VLM_API_KEY
-    if _is_local_endpoint(base_url):
-        return "ollama"
-    raise RuntimeError(
-        "VLM_API_KEY belum di-set untuk endpoint VLM non-lokal."
-    )
-
-
 def _call_vlm(
     *,
-    base_url: str,
     model: str,
-    system_prompt: str,
-    user_prompt: str,
-    image_data_url: str,
+    prompt: str,
+    image_path: str,
     temperature: float = 0.2,
-    timeout: int = 600,
 ) -> str:
-    endpoint = _resolve_endpoint(base_url)
-    api_key = _resolve_api_key(base_url)
-    headers = {"Content-Type": "application/json"}
-    if api_key and api_key != "ollama":
-        headers["Authorization"] = f"Bearer {api_key}"
-    supports_images = _is_local_endpoint(base_url) or DEFAULT_VLM_IMAGE_SUPPORT
-    if supports_images:
-        content = [
-            {"type": "text", "text": user_prompt},
-            {"type": "image_url", "image_url": {"url": image_data_url}},
-        ]
-    else:
-        logger.warning(
-            "Endpoint %s tidak mendukung image_url. "
-            "Kirim prompt teks saja. Set VLM_IMAGE_SUPPORT=true jika endpoint mendukung image.",
-            endpoint,
-        )
-        content = f"image: {image_data_url}\n\nprompt: {user_prompt}"
-    payload = {
-        "model": model,
-        "stream": False,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
+    try:
+        response = chat(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_path],
+                },
+            ],
+            options={
+                "temperature": temperature,
+                "stream": False,
             },
-            {
-                "role": "user",
-                "content": content,
-            }
-        ],
-         "options": {
-            "temperature": temperature,
-            "top_p": 0.9,
-            "repeat_penalty": 1.2,
-            "num_predict": 256
-        }
-    }
-    resp = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(
-            f"VLM error {resp.status_code} for {endpoint}: {resp.text}"
         )
-    data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"VLM error (ollama): {exc}") from exc
     try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as exc:
-        raise RuntimeError(f"Unexpected response from VLM: {data}") from exc
-
-
-def _validate_image(img_bytes: bytes, page_no: int) -> bool:
-    try:
-        Image.open(io.BytesIO(img_bytes)).verify()
-        return True
-    except Exception:  # noqa: BLE001
-        logger.warning("Slide %s: image tidak valid, dilewati.", page_no)
-        return False
+        return response["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected response from VLM: {response}") from exc
 
 
 def _get_downloaded_documents(limit: int | None) -> Iterable[Document]:
@@ -269,11 +161,10 @@ def _process_document(
     *,
     document_id: str,
     pdf_path: Path,
-    base_url: str,
     model: str,
     dpi: int,
 ) -> bool:
-    images = _pdf_to_images(pdf_path, dpi=dpi)
+    images = pdf_to_images(pdf_path, dpi=dpi)
     total_pages = len(images)
     if total_pages == 0:
         logger.warning("PDF kosong: %s", pdf_path)
@@ -309,14 +200,11 @@ def _process_document(
             session.commit()
 
         for slide_no, img_bytes in images:
-            if not _validate_image(img_bytes, slide_no):
+            if not validate_image_bytes(img_bytes, slide_no):
                 success = False
                 continue
 
-            data_url = _image_bytes_to_data_url(img_bytes)
-
-            system_prompt = SYSTEM_PROMPT.format()
-            user_prompt = USER_PROMPT.format(
+            prompt = PROMPT.format(
                 document_name=document_name,
                 issuer_name=issuer_name,
                 issuer_code=issuer_code,
@@ -328,14 +216,21 @@ def _process_document(
                 slide_content="Gambar terlampir.",
             )
 
+            tmp_path = None
+            start_at = datetime.now(timezone.utc)
             try:
+                with tempfile.NamedTemporaryFile(
+                    suffix=".png", delete=False
+                ) as tmp_file:
+                    tmp_file.write(img_bytes)
+                    tmp_path = tmp_file.name
+
                 content_md = _call_vlm(
-                    base_url=base_url,
                     model=model,
-                    user_prompt=user_prompt,
-                    image_data_url=data_url,
-                    system_prompt=system_prompt,
+                    prompt=prompt,
+                    image_path=tmp_path,
                 )
+                end_at = datetime.now(timezone.utc)
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "Gagal memanggil VLM untuk doc_id=%s slide=%s: %s",
@@ -345,6 +240,12 @@ def _process_document(
                 )
                 success = False
                 continue
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        logger.debug("Gagal menghapus file sementara: %s", tmp_path)
 
             slide = Slide(
                 document_id=document_id,
@@ -357,6 +258,8 @@ def _process_document(
                     "image_mime": "image/png",
                     "dpi": dpi,
                 },
+                ingestion_start_at=start_at,
+                ingestion_end_at=end_at,
             )
             session.add(slide)
 
@@ -373,7 +276,6 @@ def _process_document(
 def run_ingestion(
     *,
     limit: int | None = None,
-    base_url: str = DEFAULT_VLM_BASE_URL,
     model: str = DEFAULT_VLM_MODEL,
     dpi: int = DEFAULT_DPI,
 ) -> None:
@@ -398,7 +300,6 @@ def run_ingestion(
         _process_document(
             document_id=doc.id,
             pdf_path=pdf_path,
-            base_url=base_url,
             model=model,
             dpi=dpi,
         )

@@ -237,6 +237,14 @@ class Slide(Base):
         JSONB,
         nullable=True,
     )
+    ingestion_start_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    ingestion_end_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

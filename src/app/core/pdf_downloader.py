@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import random
@@ -12,10 +11,14 @@ from pathlib import Path
 from typing import Dict, List
 
 import cloudscraper
-import fitz
 import requests
 from tqdm import tqdm
 
+from app.utils.document_utils import (
+    compute_checksum,
+    get_pdf_page_count,
+    sanitize_filename,
+)
 from app.db.session import get_session
 from app.db.repositories import (
     IssuerRepository,
@@ -23,18 +26,10 @@ from app.db.repositories import (
     DocumentStatusRepository,
     DocumentRepository,
 )
-from src.data.enums import DocumentStatusEnum
 
 logger = logging.getLogger(__name__)
 
 IDX_API_URL = "https://www.idx.co.id/primary/ListedCompany/GetProfileAnnouncement"
-
-
-def _sanitize_filename(name: str) -> str:
-    """Pastikan nama file aman dan tidak berisi separator path."""
-    base_name = Path(name).name
-    sanitized = base_name.replace("/", "_").replace("\\", "_").strip()
-    return sanitized or "document.pdf"
 
 
 def _build_keyword_for_type(doc_type: str) -> str:
@@ -127,7 +122,7 @@ def _fetch_attachments_for_issuer(
             original_filename = att.get("OriginalFilename") or os.path.basename(
                 full_save_path
             )
-            safe_filename = _sanitize_filename(original_filename)
+            safe_filename = sanitize_filename(original_filename)
             attachments.append(
                 {
                     "download_url": download_url,
@@ -154,25 +149,6 @@ def _download_file(scraper: cloudscraper.CloudScraper, url: str, dest_path: Path
             if not chunk:
                 continue
             f.write(chunk)
-
-
-def _compute_checksum(path: Path) -> str:
-    """Hitung checksum SHA256 dari file lokal."""
-    sha256 = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
-    return sha256.hexdigest()
-
-
-def _get_pdf_page_count(path: Path) -> int | None:
-    """Hitung jumlah halaman PDF, return None jika gagal."""
-    try:
-        with fitz.open(path) as doc:
-            return doc.page_count
-    except Exception:  # noqa: BLE001
-        logger.exception("Gagal menghitung jumlah halaman untuk %s", path)
-        return None
 
 
 def download_all_from_idx_for_year(
@@ -265,7 +241,7 @@ def download_all_from_idx_for_year(
 
                 # Skip kalau file sudah ada → compute checksum & cek DB
                 if dest_path.exists():
-                    checksum_existing = _compute_checksum(dest_path)
+                    checksum_existing = compute_checksum(dest_path)
                     existing_doc = doc_repo.get_by_checksum(checksum_existing)
                     if existing_doc:
                         logger.info(
@@ -291,7 +267,7 @@ def download_all_from_idx_for_year(
                     continue
 
                 # Compute checksum
-                checksum = _compute_checksum(dest_path)
+                checksum = compute_checksum(dest_path)
 
                 # Check DB again after download
                 existing_doc = doc_repo.get_by_checksum(checksum)
@@ -308,8 +284,7 @@ def download_all_from_idx_for_year(
                 pretty_type = "Public Expose" if doc_type == "pubex" else "Laporan Keuangan"
                 doc_name = f"{pretty_type} {code} {year} - {original_filename}"
 
-                page_count = _get_pdf_page_count(dest_path)
-                page_count = _get_pdf_page_count(dest_path)
+                page_count = get_pdf_page_count(dest_path)
                 metadata = {
                     "source": "IDX",
                     "type": "pubex" if doc_type == "pubex" else "finrep",
@@ -329,86 +304,12 @@ def download_all_from_idx_for_year(
                     name=doc_name,
                     file_path=str(dest_path),
                     publish_at=publish_at,
-                    status_id=DocumentStatusEnum.DOWNLOADED.id,
+                    status_id=downloaded_status.id,
                     metadata=metadata,
                 )
 
                 session.commit()  # <── COMMIT SATU DOKUMEN
                 logger.info("INSERT DB: document id=%s path=%s", doc.id, dest_path)
-
-                dest_path = emiten_dir / file_name
-
-                # Kalau file sudah ada → cek checksum & DB
-                if dest_path.exists():
-                    checksum_existing = _compute_checksum(dest_path)
-                    existing_doc = doc_repo.get_by_checksum(checksum_existing)
-                    if existing_doc:
-                        logger.info(
-                            "File %s (%s) sudah terdaftar dengan checksum yang sama, skip.",
-                            file_name,
-                            code,
-                        )
-                        continue  # tidak usah download lagi
-
-                # Download (overwrite atau baru)
-                try:
-                    logger.info("Download %s", original_filename)
-                    _download_file(scraper, download_url, dest_path)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception(
-                        "Gagal download file %s untuk %s: %s",
-                        file_name,
-                        code,
-                        exc,
-                    )
-                    continue
-
-                # Hitung checksum file yang baru di-download
-                checksum = _compute_checksum(dest_path)
-
-                # Cek di DB: kalau checksum sudah ada, tidak usah insert dokumen baru
-                existing_doc = doc_repo.get_by_checksum(checksum)
-                if existing_doc:
-                    logger.info(
-                        "Checksum %s sudah ada di documents (id=%s), skip insert.",
-                        checksum,
-                        existing_doc.id,
-                    )
-                    continue
-
-                # Buat nama dokumen yang manusiawi
-                # contoh: "PUBEX ABMM 2023 - <nama_file>.pdf"
-                pretty_type = "Public Expose" if doc_type == "pubex" else "Laporan Keuangan"
-                doc_name = f"{pretty_type} {code} {year} - {original_filename}"
-
-                page_count = _get_pdf_page_count(dest_path)
-                page_count = _get_pdf_page_count(dest_path)
-                metadata = {
-                    "source": "IDX",
-                    "type": "pubex" if doc_type == "pubex" else "finrep",
-                    "year": year,
-                    "collection_name": collection.name,
-                    "pages": page_count,
-                    "issuer_code": code,
-                    "filename": original_filename,
-                    **pengumuman_metadata,
-                }
-
-                doc = doc_repo.create_document(
-                    collection_code=collection.code,
-                    issuer_code=code,
-                    checksum=checksum,
-                    name=doc_name,
-                    file_path=str(dest_path),
-                    publish_at=publish_at,
-                    status_id=downloaded_status.id,
-                    metadata=metadata,
-                )
-                logger.info(
-                    "Dokumen tersimpan di DB: id=%s, path=%s",
-                    doc.id,
-                    dest_path,
-                )
 
             # Delay kecil antar issuer untuk sopan ke IDX
             time.sleep(random.uniform(0.8, 1.5))
