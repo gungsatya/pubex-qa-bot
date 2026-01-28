@@ -35,10 +35,6 @@ PROMPT_PUBEX = PromptTemplate(
     "Anda adalah Konsultan Keuangan dan Kebijakan Perusahaan.\n"
     "Tugas Anda adalah mengekstraksi isi slide presentasi Public Expose (Pubex) untuk sistem Tanya Jawab berbasis RAG.\n\n"
     
-    "*Public Expose* atau *Pubex* (paparan publik) adalah kegiatan wajib tahunan bagi emiten (perusahaan tercatat) di Bursa Efek Indonesia (BEI)\n" 
-    "untuk memaparkan kinerja keuangan, operasional, dan rencana bisnis kepada publik setidaknya sekali dalam setahun.\n"
-    "Tujuannya adalah memastikan transparansi informasi, meningkatkan kepercayaan investor, dan memperjelas prospek perusahaan.\n\n"
-    
     "*ATURAN UMUM:*\n"
     "- Analisis HANYA berdasarkan pada konten slide yang terlihat, termasuk teks, angka, tabel, grafik, atau daftar.\n"
     "- ABAIKAN visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
@@ -48,26 +44,21 @@ PROMPT_PUBEX = PromptTemplate(
     "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
     "- Sebutkan eksplisit nama emiten, periode, dan satuan jika muncul (miliar, triliun, %, USD, IDR).\n"
     "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n"
+    "- DILARANG menulis kalimat generik yang tidak muncul di slide, seperti: 'Laporan ini mencakup informasi keuangan, operasional, dan rencana bisnis' atau 'Data ini disajikan dalam bentuk laporan yang terstruktur dan dapat diakses oleh investor'.\n"
+    "- Jika konten pada slide sangat sedikit (misalnya hanya judul, logo, atau 1 kalimat singkat),  cukup tulis ulang apa yang ada tanpa menambah penjelasan tambahan."
     "- OUTPUT berupa Markdown berbahasa Indonesia.\n"
     "- Gunakan gaya bahasa informatif, formal dan jelas.\n\n"
     
     "*OUTPUT MARKDOWN WAJIB:*\n"
-    "- Struktur output harus terdiri dari tiga bagian utama: (Judul Slide), Ringkasan, dan Konten.\n"
-    "- Output HARUS mengikuti aturan umum."
-    "- Judul slide disesuaikan dengan aturan yang telah ditentukan.\n\n"
+    "- Struktur output harus terdiri dari dua bagian utama: (Judul Slide), dan Konten.\n"
+    "- Output HARUS mengikuti aturan umum.\n"
+    "- (Judul slide) disesuaikan dengan aturan yang telah ditentukan.\n\n"
     
     "Aturan Output :\n"
     "## (Judul Slide) (Heading 2)\n"
-    "- Jika ada judul di slide, gunakan apa adanya.\n"
-    "- Jika tidak ada, buat frasa deskriptif ≤10 kata tanpa opini.\n\n"
-    
-    "### Ringkasan (Heading 3)\n"
-    "- Maksimal 20 kalimat yang dibuat menjadi paragraf.\n"
-    "- Masing-masing paragraf memiliki satu kesatuan topik.\n"
-    "- Hanya informasi finansial/bisnis/operasional atau informasi presentasi.\n"
-    "- Dilarang mendeskripsikan visual non-informatif.\n"
-    "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
-    "- Jika slide adalah cover/poster tanpa konten: tulis 'Slide pembuka. Tidak terdapat konten finansial atau bisnis.'\n\n"
+    "-Ganti (Judul Slide) dengan judul yang sesuai berdasarkan aturan berikut:\n"
+    "   - Jika slide memiliki judul eksplisit, gunakan teks judul tersebut secara apa adanya.\n"
+    "   - Jika tidak terdapat judul eksplisit, buat frasa deskriptif ≤10 kata yang hanya menggambarkan isi slide tanpa opini, interpretasi, atau penambahan informasi.\n\n"
     
     "### Konten (Heading 3)\n"
     "- Hanya berisi informasi finansial/bisnis yang berasal dari paragraf, tabel, grafik, daftar pada slide\n"
@@ -78,13 +69,22 @@ PROMPT_PUBEX = PromptTemplate(
     "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
     "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
     "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
-    "- Untuk paragraf: tulis ulang isi teksnya.\n\n"
+    "- Untuk paragraf: tulis ulang isi teksnya secara apa adanya, tanpa menambah kalimat baru.\n"
+    "- Jika paragraf hanya berisi judul atau frasa pendek, cukup salin apa adanya.\n"
+    "- Untuk infografis geografis dan peta sebaran:\n"
+    "   - Jika terdapat peta geografis atau diagram penyebaran lokasi, identifikasi informasi geografis yang eksplisit terlihat.\n"
+    "   - Informasi yang dapat diekstraksi mencakup nama kota, kabupaten, provinsi, pulau, negara, fasilitas, unit bisnis, pelabuhan, tambang, perkebunan, kantor cabang, gudang, atau area operasional.\n"
+    "   - Jika terdapat angka (misalnya luas, kapasitas, tonase, hektare, km, unit), tuliskan angkanya sesuai yang terlihat.\n"
+    "   - Jika terdapat label ikon (contoh: ikon pabrik, kapal, rig, truk, menara BTS), tuliskan labelnya tanpa menebak maknanya.\n"
+    "   - Jika terdapat koneksi garis (misalnya rute logistik atau alur distribusi), tuliskan daftar rute yang terlihat tanpa interpretasi.\n"
+    "   - Jika terdapat cluster wilayah, kelompokkan berdasarkan wilayah administratif yang terlihat (misalnya provinsi → kota, atau negara → kota).\n"
+    "   - Jika informasi tidak terbaca atau ambigu, lewati tanpa menebak.\n\n"
 
     "INFORMASI DOKUMEN:\n"
-    "Dokumen: {document_name}\n"
-    "Emiten: {issuer_name} ({issuer_code})\n"
-    "Tahun: {document_year}\n"
-    "Slide: {slide_no} / {total_pages}\n\n"
+    "- Dokumen: {document_name}\n"
+    "- Emiten: {issuer_name} ({issuer_code})\n"
+    "- Tahun: {document_year}\n"
+    "- Slide: {slide_no} / {total_pages}\n\n"
 )
 
 
@@ -104,6 +104,9 @@ def _call_vlm(
             "stream": False,
             "options": {
                 "temperature": temperature,
+                "num_predict": 768,      # batasi panjang output
+                "top_p": 0.8,            # sampling lebih ketat
+                "repeat_penalty": 1.2,   # hukum pengulangan
             },
         }
         response = SESSION.post(
@@ -226,18 +229,45 @@ def _process_document(
         slide_dir.mkdir(parents=True, exist_ok=True)
 
         for slide_no, img_bytes in pdf_to_images(pdf_path, dpi=dpi):
+            logger.info(
+                "Mulai proses slide %s/%s doc_id=%s (%s)",
+                slide_no,
+                total_pages,
+                document_id,
+                pdf_path.name,
+            )
             if not validate_image_bytes(img_bytes, slide_no):
+                logger.warning(
+                    "Validasi image gagal untuk slide %s/%s doc_id=%s",
+                    slide_no,
+                    total_pages,
+                    document_id,
+                )
                 success = False
                 continue
 
-            prompt =  PROMPT_PUBEX.format(
-                document_name=document_name,
-                issuer_name=issuer_name,
-                issuer_code=issuer_code,
-                document_year=document_year,
-                document_metadata=document_metadata,
-                slide_no=slide_no,
-            ) if document_type == "pubex" else ""
+            if document_type == "pubex":
+                try:
+                    prompt = PROMPT_PUBEX.format(
+                        document_name=document_name,
+                        issuer_name=issuer_name,
+                        issuer_code=issuer_code,
+                        document_year=document_year,
+                        document_metadata=document_metadata,
+                        slide_no=slide_no,
+                        total_pages=total_pages,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "Gagal format prompt untuk doc_id=%s slide=%s: %s",
+                        document_id,
+                        slide_no,
+                        exc,
+                    )
+                    success = False
+                    continue
+            else:
+                prompt = ""
 
             start_at = datetime.now(timezone.utc)
             try:
@@ -270,11 +300,18 @@ def _process_document(
                     "file_path": str(pdf_path),
                     "image_mime": "image/png",
                     "dpi": dpi,
+                    "vlm_model": model,
                 },
                 ingestion_start_at=start_at,
                 ingestion_end_at=end_at,
             )
             session.add(slide)
+            logger.info(
+                "Selesai proses slide %s/%s doc_id=%s",
+                slide_no,
+                total_pages,
+                document_id,
+            )
 
         doc.status = (
             DocumentStatusEnum.PARSED.id
