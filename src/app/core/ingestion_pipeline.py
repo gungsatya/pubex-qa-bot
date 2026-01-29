@@ -16,8 +16,9 @@ from app.utils.document_utils import pdf_to_images, count_pdf_pages
 from app.utils.image_utils import validate_image_bytes
 from app.db.models import Document, Slide
 from app.db.session import get_session
-from src.app.config import DEFAULT_DPI, DEFAULT_VLM_MODEL
+from src.app.config import DEFAULT_DPI, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_TIMEOUT, DEFAULT_VLM_MODEL
 from src.data.enums import DocumentStatusEnum
+from src.app.utils.telegram import send_telegram_message
 
 try:
     from llama_index.core.prompts import PromptTemplate
@@ -27,58 +28,50 @@ except ImportError as exc:  # pragma: no cover - guarded for runtime safety
     ) from exc
 
 logger = logging.getLogger(__name__)
-DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
+
 SESSION = requests.Session()
 
 PROMPT_PUBEX = PromptTemplate(
     "Anda adalah Konsultan Keuangan dan Kebijakan Perusahaan.\n"
     "Tugas Anda adalah mengekstraksi isi slide presentasi Public Expose (Pubex) untuk sistem Tanya Jawab berbasis RAG.\n\n"
-    
+
     "*ATURAN UMUM:*\n"
-    "- Analisis HANYA berdasarkan pada konten slide yang terlihat, termasuk teks, angka, tabel, grafik, atau daftar.\n"
-    "- ABAIKAN visual non-informatif: foto manusia, ekspresi, suasana, pakaian, ikon, dekorasi, warna, dan estetika.\n"
-    "- TIDAK BOLEH menebak, menambah, menyimpulkan, atau beropini.\n"
-    "- Jika bagian tidak terbaca/tidak jelas → lewati tanpa menebak.\n"
-    "- Hasil harus bisa dipahami tanpa melihat slide.\n"
-    "- Hindari referensi relatif: 'slide ini', 'di atas', 'lihat berikut'.\n"
-    "- Sebutkan eksplisit nama emiten, periode, dan satuan jika muncul (miliar, triliun, %, USD, IDR).\n"
-    "- Prioritaskan data: finansial, bisnis, operasional, ESG, tata kelola.\n"
-    "- DILARANG menulis kalimat generik yang tidak muncul di slide, seperti: 'Laporan ini mencakup informasi keuangan, operasional, dan rencana bisnis' atau 'Data ini disajikan dalam bentuk laporan yang terstruktur dan dapat diakses oleh investor'.\n"
-    "- Jika konten pada slide sangat sedikit (misalnya hanya judul, logo, atau 1 kalimat singkat),  cukup tulis ulang apa yang ada tanpa menambah penjelasan tambahan."
-    "- OUTPUT berupa Markdown berbahasa Indonesia.\n"
-    "- Gunakan gaya bahasa informatif, formal dan jelas.\n\n"
-    
-    "*OUTPUT MARKDOWN WAJIB:*\n"
-    "- Struktur output harus terdiri dari dua bagian utama: (Judul Slide), dan Konten.\n"
-    "- Output HARUS mengikuti aturan umum.\n"
-    "- (Judul slide) disesuaikan dengan aturan yang telah ditentukan.\n\n"
-    
-    "Aturan Output :\n"
-    "## (Judul Slide) (Heading 2)\n"
-    "-Ganti (Judul Slide) dengan judul yang sesuai berdasarkan aturan berikut:\n"
-    "   - Jika slide memiliki judul eksplisit, gunakan teks judul tersebut secara apa adanya.\n"
-    "   - Jika tidak terdapat judul eksplisit, buat frasa deskriptif ≤10 kata yang hanya menggambarkan isi slide tanpa opini, interpretasi, atau penambahan informasi.\n\n"
-    
-    "### Konten (Heading 3)\n"
-    "- Hanya berisi informasi finansial/bisnis yang berasal dari paragraf, tabel, grafik, daftar pada slide\n"
-    "- Jika tidak ada konten finansial/bisnis yang terbaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.'.\n"
-    "- Jika hanya terdapat 1 jenis data (misalnya hanya paragraf, hanya daftar, atau hanya tabel), tampilkan langsung tanpa membuat segmen.\n"
-    "- Jika terdapat >1 jenis data (misalnya ada 2 tabel, 1 daftar, 3 grafik; atau tabel, daftar dan grafik masing-masing satu), buat segmen per jenis dengan judul sesuai topik konten menggunakan heading 4 (####).\n"
-    "- DILARANG membuat segmen jika tidak ada konten yang ditampilkan.\n"
-    "- Untuk tabel: tulis ulang dalam tabel Markdown sesuai struktur dan label yang terlihat.\n"
-    "- Untuk grafik: jika dapat dibaca, konversi ke tabel; jika tidak, jelaskan label/sumbu/kategori tanpa interpretasi.\n"
-    "- Untuk daftar: tulis ulang sebagai bullet atau numbering mengikuti struktur asli.\n"
-    "- Untuk paragraf: tulis ulang isi teksnya secara apa adanya, tanpa menambah kalimat baru.\n"
-    "- Jika paragraf hanya berisi judul atau frasa pendek, cukup salin apa adanya.\n"
-    "- Untuk infografis geografis dan peta sebaran:\n"
-    "   - Jika terdapat peta geografis atau diagram penyebaran lokasi, identifikasi informasi geografis yang eksplisit terlihat.\n"
-    "   - Informasi yang dapat diekstraksi mencakup nama kota, kabupaten, provinsi, pulau, negara, fasilitas, unit bisnis, pelabuhan, tambang, perkebunan, kantor cabang, gudang, atau area operasional.\n"
-    "   - Jika terdapat angka (misalnya luas, kapasitas, tonase, hektare, km, unit), tuliskan angkanya sesuai yang terlihat.\n"
-    "   - Jika terdapat label ikon (contoh: ikon pabrik, kapal, rig, truk, menara BTS), tuliskan labelnya tanpa menebak maknanya.\n"
-    "   - Jika terdapat koneksi garis (misalnya rute logistik atau alur distribusi), tuliskan daftar rute yang terlihat tanpa interpretasi.\n"
-    "   - Jika terdapat cluster wilayah, kelompokkan berdasarkan wilayah administratif yang terlihat (misalnya provinsi → kota, atau negara → kota).\n"
-    "   - Jika informasi tidak terbaca atau ambigu, lewati tanpa menebak.\n\n"
+    "- Analisis HANYA berdasarkan konten yang terlihat pada slide: teks, angka, tabel, grafik, daftar, diagram, atau peta.\n"
+    "- ABAIKAN visual non-informatif seperti foto manusia, ekspresi, ikon dekoratif, ornamen, warna, latar, atau estetika visual.\n"
+    "- TIDAK BOLEH menebak, menyimpulkan, berasumsi, atau memberikan opini.\n"
+    "- Jika elemen tidak terbaca atau ambigu → lewati tanpa menebak.\n"
+    "- Hasil harus dapat dipahami tanpa melihat slide.\n"
+    "- DILARANG menggunakan kalimat generik seperti: 'Laporan ini mencakup informasi keuangan dan operasional' atau 'Data ini disajikan dalam bentuk laporan yang terstruktur'.\n"
+    "- DILARANG menggunakan frasa presentasi seperti: 'pada slide ini', 'secara keseluruhan', 'dapat dilihat', atau 'berikut ini'.\n"
+    "- Jika konten pada slide sangat sedikit (hanya judul atau 1 baris), cukup tulis ulang apa adanya tanpa narasi tambahan.\n"
+    "- OUTPUT menggunakan Markdown berbahasa Indonesia.\n"
+    "- Gunakan gaya bahasa informatif, padat, dan faktual.\n\n"
+
+    "*STRUKTUR OUTPUT WAJIB:*\n"
+    "- Output hanya terdiri dari (Judul Slide) dan (Konten).\n"
+    "- Judul menggunakan Heading 2 (##).\n"
+    "- Konten dituliskan di bawah judul.\n"
+    "- Jika konten terbagi menjadi beberapa segmen, setiap segmen menggunakan Heading 3 (###) dengan nama segmen sesuai isi.\n"
+    "- Jika hanya terdapat 1 jenis data, tampilkan langsung tanpa Heading 3.\n"
+    "- Output TIDAK menambahkan label seperti 'Konten:' atau heading tambahan lain di luar aturan ini.\n\n"
+
+    "## Judul Slide (Heading 2)\n"
+    "- Jika slide memiliki judul eksplisit, salin teks judul secara apa adanya.\n"
+    "- Jika tidak terdapat judul eksplisit, buat frasa deskriptif ≤10 kata yang hanya menggambarkan isi slide tanpa opini, narasi, atau interpretasi.\n\n"
+
+    "### Konten (Heading 3 per segmen jika diperlukan)\n"
+    "- Salin ulang data yang terlihat dalam bentuk tabel, daftar, atau kalimat pendek sesuai aslinya.\n"
+    "- Untuk tabel: tulis ulang menggunakan tabel Markdown dengan kolom dan label sesuai aslinya.\n"
+    "- Untuk daftar: gunakan bullet '-' atau numbering sesuai slide.\n"
+    "- Untuk grafik: jika angkanya terbaca, konversi menjadi tabel; jika tidak, tuliskan label sumbu/kategori tanpa interpretasi.\n"
+    "- Untuk paragraf: tulis ulang isi teks secara faktual tanpa menambahkan kalimat baru.\n"
+    "- Untuk infografis geografis atau peta sebaran:\n"
+    "   - tuliskan lokasi (kota/provinsi/pulau/negara), fasilitas, kantor cabang, pelabuhan, tambang, smelter, kebun, gudang, atau unit operasional yang terlihat.\n"
+    "   - sertakan angka (luas, kapasitas, hektare, tonase, km, unit) jika tersedia.\n"
+    "   - jika terdapat rute logistik/distribusi, tuliskan rute yang terlihat tanpa interpretasi.\n"
+    "   - jika terdapat cluster wilayah, tampilkan sebagai tabel atau daftar.\n"
+    "- Jika hanya terdapat satu jenis konten pada slide, tampilkan tanpa Heading 3.\n"
+    "- Jika tidak terdapat konten finansial/bisnis yang dapat dibaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.'.\n\n"
 
     "INFORMASI DOKUMEN:\n"
     "- Dokumen: {document_name}\n"
@@ -86,6 +79,7 @@ PROMPT_PUBEX = PromptTemplate(
     "- Tahun: {document_year}\n"
     "- Slide: {slide_no} / {total_pages}\n\n"
 )
+
 
 
 def _call_vlm(
@@ -142,9 +136,27 @@ def _get_downloaded_documents(limit: int | None) -> Iterable[Document]:
         return docs
 
 
-def _count_existing_slides(session, document_id: str) -> int:
+def _count_existing_slides(
+    session,
+    document_id: str,
+    model: str | None = None,
+) -> int:
     stmt = select(func.count(Slide.id)).where(Slide.document_id == document_id)
+    if model:
+        stmt = stmt.where(Slide.slide_metadata["vlm_model"].astext == model)
     return int(session.execute(stmt).scalar() or 0)
+
+
+def _delete_existing_slides(
+    session,
+    document_id: str,
+    model: str | None = None,
+) -> int:
+    query = session.query(Slide).filter(Slide.document_id == document_id)
+    if model:
+        query = query.filter(Slide.slide_metadata["vlm_model"].astext == model)
+    deleted = query.delete(synchronize_session=False)
+    return int(deleted or 0)
 
 
 def _extract_year(doc: Document, pdf_path: Path) -> str:
@@ -189,6 +201,8 @@ def _process_document(
     pdf_path: Path,
     model: str,
     dpi: int,
+    overwrite_mode: str = "document",
+    update_doc_status: bool = True,
 ) -> bool:
     
     total_pages = count_pdf_pages(pdf_path)
@@ -213,17 +227,32 @@ def _process_document(
             else "-"
         )
 
-        existing = _count_existing_slides(session, document_id)
-        if existing > 0:
-            logger.info(
-                "Overwrite %s: hapus %s slide lama sebelum ingest ulang.",
-                document_id,
-                existing,
+        if overwrite_mode not in {"document", "model", "none"}:
+            raise ValueError(
+                "overwrite_mode harus salah satu dari: document, model, none"
             )
-            session.query(Slide).filter(Slide.document_id == document_id).delete(
-                synchronize_session=False
-            )
-            session.commit()
+
+        if overwrite_mode == "document":
+            existing = _count_existing_slides(session, document_id)
+            if existing > 0:
+                logger.info(
+                    "Overwrite %s: hapus %s slide lama sebelum ingest ulang.",
+                    document_id,
+                    existing,
+                )
+                _delete_existing_slides(session, document_id)
+                session.commit()
+        elif overwrite_mode == "model":
+            existing = _count_existing_slides(session, document_id, model)
+            if existing > 0:
+                logger.info(
+                    "Overwrite %s (model=%s): hapus %s slide lama sebelum ingest ulang.",
+                    document_id,
+                    model,
+                    existing,
+                )
+                _delete_existing_slides(session, document_id, model)
+                session.commit()
 
         slide_dir = pdf_path.parent / "slides" / document_id
         slide_dir.mkdir(parents=True, exist_ok=True)
@@ -313,11 +342,12 @@ def _process_document(
                 document_id,
             )
 
-        doc.status = (
-            DocumentStatusEnum.PARSED.id
-            if success
-            else DocumentStatusEnum.FAILED_PARSED.id
-        )
+        if update_doc_status:
+            doc.status = (
+                DocumentStatusEnum.PARSED.id
+                if success
+                else DocumentStatusEnum.FAILED_PARSED.id
+            )
         session.commit()
 
     return success
@@ -328,6 +358,8 @@ def run_ingestion(
     limit: int | None = None,
     model: str = DEFAULT_VLM_MODEL,
     dpi: int = DEFAULT_DPI,
+    overwrite_mode: str = "document",
+    update_doc_status: bool = True,
 ) -> None:
     start_at = datetime.now(timezone.utc)
     docs = _get_downloaded_documents(limit)
@@ -353,6 +385,8 @@ def run_ingestion(
             pdf_path=pdf_path,
             model=model,
             dpi=dpi,
+            overwrite_mode=overwrite_mode,
+            update_doc_status=update_doc_status,
         )
 
     end_at = datetime.now(timezone.utc)
@@ -361,3 +395,105 @@ def run_ingestion(
     seconds = int(total_seconds % 60)
     logger.info("Durasi ingestion total: %s menit %s detik", minutes, seconds)
     print(f"Durasi ingestion total: {minutes} menit {seconds} detik")
+
+
+def run_ingestion_multi_model(
+    *,
+    models: Iterable[str],
+    limit: int | None = None,
+    dpi: int = DEFAULT_DPI,
+    overwrite_mode: str = "model",
+    update_doc_status: bool = False,
+) -> None:
+    model_list = [m.strip() for m in models if m and m.strip()]
+    if not model_list:
+        logger.info("Tidak ada model yang diberikan untuk ingestion multi-model.")
+        print("Tidak ada model yang diberikan untuk ingestion multi-model.")
+        return
+
+    start_at = datetime.now(timezone.utc)
+    docs = _get_downloaded_documents(limit)
+    if not docs:
+        logger.info("Tidak ada dokumen berstatus downloaded.")
+        print("Tidak ada dokumen berstatus downloaded.")
+        return
+
+    send_telegram_message(
+        (
+            "Mulai komparasi ingestion.\n"
+            f"Model: {', '.join(model_list)}\n"
+            f"Dokumen: {len(docs)}"
+        ),
+    )
+
+    comparison_stats: dict[str, dict[str, int]] = {
+        model: {"docs_success": 0, "slides": 0} for model in model_list
+    }
+
+    for doc in docs:
+        pdf_path = Path(doc.file_path)
+        if not pdf_path.is_file():
+            logger.error("File PDF tidak ditemukan: %s", pdf_path)
+            with get_session() as session:
+                db_doc = session.get(Document, doc.id)
+                if db_doc and update_doc_status:
+                    db_doc.status = DocumentStatusEnum.FAILED_PARSED.id
+                    session.commit()
+            continue
+
+        per_doc_counts: dict[str, int] = {}
+        for model in model_list:
+            logger.info(
+                "Memproses doc_id=%s (%s) dengan model=%s",
+                doc.id,
+                pdf_path.name,
+                model,
+            )
+            success = _process_document(
+                document_id=doc.id,
+                pdf_path=pdf_path,
+                model=model,
+                dpi=dpi,
+                overwrite_mode=overwrite_mode,
+                update_doc_status=update_doc_status,
+            )
+            with get_session() as session:
+                per_doc_counts[model] = _count_existing_slides(
+                    session, doc.id, model
+                )
+            if success:
+                comparison_stats[model]["docs_success"] += 1
+            comparison_stats[model]["slides"] += per_doc_counts[model]
+
+        doc_name = doc.name or pdf_path.name
+        per_model_text = ", ".join(
+            f"{model}={per_doc_counts.get(model, 0)}" for model in model_list
+        )
+        send_telegram_message(
+            (
+                "Progress komparasi ingestion (tanpa notif).\n"
+                f"Dokumen: {doc_name}\n"
+                f"Slides per model: {per_model_text}"
+            ),
+            disable_notification=True,
+        )
+
+    end_at = datetime.now(timezone.utc)
+    total_seconds = (end_at - start_at).total_seconds()
+    minutes = int(total_seconds // 60)
+    seconds = int(total_seconds % 60)
+    logger.info("Durasi ingestion total: %s menit %s detik", minutes, seconds)
+    print(f"Durasi ingestion total: {minutes} menit {seconds} detik")
+
+    comparison_lines = [
+        "Selesai komparasi ingestion.",
+        f"Dokumen diproses: {len(docs)}",
+        f"Durasi total: {minutes} menit {seconds} detik",
+        "Perbandingan hasil:",
+    ]
+    for model in model_list:
+        stats = comparison_stats[model]
+        comparison_lines.append(
+            f"- {model}: docs_success={stats['docs_success']}, slides={stats['slides']}"
+        )
+    send_telegram_message("\n".join(comparison_lines))

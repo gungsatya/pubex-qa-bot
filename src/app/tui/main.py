@@ -2,7 +2,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from app.core.pdf_downloader import download_all_from_idx_for_year
-from app.core.ingestion_pipeline import run_ingestion as run_ingestion_pipeline
+from app.core.ingestion_pipeline import (
+    run_ingestion as run_ingestion_pipeline,
+    run_ingestion_multi_model as run_ingestion_multi_model_pipeline,
+)
 from app.core.embedding_pipeline import run_embedding_pipeline
 import sys
 import logging
@@ -77,6 +80,7 @@ def print_menu():
     print(f"  [2] Ingestion Pipeline{RESET}")
     print(f"  [3] Embedding Pipeline{RESET}")
     print(f"  [4] Run QA-Bot (Chainlit){RESET}")
+    print(f"  [5] Ingestion Multi-Model (Compare){RESET}")
     print(f"  [0] {RED}Keluar{RESET}\n")
 
 
@@ -126,6 +130,35 @@ def run_ingestion():
     run_ingestion_pipeline(limit=limit)
 
 
+def run_ingestion_multi_model():
+    print(f"\n{YELLOW}Ingestion Multi-Model (Compare){RESET}")
+    limit_text = input(
+        "Limit dokumen (kosong = semua, contoh 10): "
+    ).strip()
+    if limit_text:
+        if not limit_text.isdigit():
+            print(f"{RED}Limit harus berupa angka.{RESET}")
+            return
+        limit = int(limit_text)
+    else:
+        limit = None
+
+    models_text = input(
+        "Masukkan daftar model (pisahkan dengan koma): "
+    ).strip()
+    models = [m.strip() for m in models_text.split(",") if m.strip()]
+    if not models:
+        print(f"{RED}Model tidak boleh kosong.{RESET}")
+        return
+
+    print(
+        f"{CYAN}Mulai ingestion multi-model untuk: {', '.join(models)}..."
+        f"{RESET}"
+    )
+    logger.info("Ingestion multi-model started (limit=%s, models=%s).", limit, models)
+    run_ingestion_multi_model_pipeline(limit=limit, models=models)
+
+
 def run_chainlit():
     print(f"\n{BLUE}Menjalankan Chainlit...{RESET}")
     logger.info("Chainlit stub called.")
@@ -155,12 +188,13 @@ def main_loop():
         "2": run_ingestion,
         "3": run_embedding,
         "4": run_chainlit,
+        "5": run_ingestion_multi_model,
     }
 
     while True:
         print_header()
         print_menu()
-        choice = input("> Pilih menu [0-4]: ").strip()
+        choice = input("> Pilih menu [0-5]: ").strip()
 
         if choice == "0":
             print(f"\n{RED}Keluar dari QA-Bot. Bye!{RESET}")

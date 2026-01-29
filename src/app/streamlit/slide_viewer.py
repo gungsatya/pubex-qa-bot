@@ -21,7 +21,10 @@ def _count_slides(document_id: str | None = None) -> int:
 def _fetch_document_options() -> List[Dict[str, str]]:
     with get_session() as session:
         rows = session.execute(
-            select(Document.id, Document.name).order_by(Document.name.asc())
+            select(Document.id, Document.name)
+            .join(Slide, Slide.document_id == Document.id)
+            .distinct(Document.id, Document.name)
+            .order_by(Document.name.asc())
         ).all()
     options: List[Dict[str, str]] = []
     for row in rows:
@@ -166,6 +169,9 @@ def main() -> None:
                 )
             else:
                 st.markdown("**ingestion_time**: (tidak tersedia)")
+
+            vlm_model = (slide.get("slide_metadata") or {}).get("vlm_model")
+            st.markdown(f"**vlm_model**: {vlm_model or '(tidak tersedia)'}")
 
             st.markdown("**metadata**")
             st.json(slide["slide_metadata"] or {})
