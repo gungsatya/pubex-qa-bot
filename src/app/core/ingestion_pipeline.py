@@ -32,46 +32,37 @@ logger = logging.getLogger(__name__)
 SESSION = requests.Session()
 
 PROMPT_PUBEX = PromptTemplate(
-    "Anda adalah Konsultan Keuangan dan Kebijakan Perusahaan.\n"
-    "Tugas Anda adalah mengekstraksi isi slide presentasi Public Expose (Pubex) untuk sistem Tanya Jawab berbasis RAG.\n\n"
+    "Anda adalah Konsultan Keuangan yang mengekstraksi isi slide Public Expose (Pubex) "
+    "menjadi teks Markdown untuk sistem Tanya Jawab berbasis RAG.\n\n"
 
-    "*ATURAN UMUM:*\n"
-    "- Analisis HANYA berdasarkan konten yang terlihat pada slide: teks, angka, tabel, grafik, daftar, diagram, atau peta.\n"
-    "- ABAIKAN visual non-informatif seperti foto manusia, ekspresi, ikon dekoratif, ornamen, warna, latar, atau estetika visual.\n"
-    "- TIDAK BOLEH menebak, menyimpulkan, berasumsi, atau memberikan opini.\n"
-    "- Jika elemen tidak terbaca atau ambigu → lewati tanpa menebak.\n"
-    "- Hasil harus dapat dipahami tanpa melihat slide.\n"
-    "- DILARANG menggunakan kalimat generik seperti: 'Laporan ini mencakup informasi keuangan dan operasional' atau 'Data ini disajikan dalam bentuk laporan yang terstruktur'.\n"
-    "- DILARANG menggunakan frasa presentasi seperti: 'pada slide ini', 'secara keseluruhan', 'dapat dilihat', atau 'berikut ini'.\n"
-    "- Jika konten pada slide sangat sedikit (hanya judul atau 1 baris), cukup tulis ulang apa adanya tanpa narasi tambahan.\n"
-    "- OUTPUT menggunakan Markdown berbahasa Indonesia.\n"
-    "- Gunakan gaya bahasa informatif, padat, dan faktual.\n\n"
+    "ATURAN UTAMA:\n"
+    "- Ekstraksi HANYA dari konten yang terlihat: teks, angka, tabel, grafik, daftar, diagram, atau peta.\n"
+    "- Abaikan visual non-informatif: foto manusia, ekspresi, ikon dekoratif, ornamen, warna, latar, estetika.\n"
+    "- Jangan menebak, menyimpulkan, atau menambah informasi.\n"
+    "- Jika tidak terbaca atau ambigu, lewati.\n"
+    "- Hindari frasa presentasi seperti: 'pada slide ini', 'dapat dilihat', 'berikut ini', atau kalimat generik.\n"
+    "- Jika konten sangat sedikit, salin apa adanya tanpa narasi tambahan.\n"
+    "- Dilarang menambah informasi dokumen dalam hasil ekstraksi.\n"
+    "- Output WAJIB Markdown berbahasa Indonesia.\n\n"
 
-    "*STRUKTUR OUTPUT WAJIB:*\n"
-    "- Output hanya terdiri dari (Judul Slide) dan (Konten).\n"
-    "- Judul menggunakan Heading 2 (##).\n"
-    "- Konten dituliskan di bawah judul.\n"
-    "- Jika konten terbagi menjadi beberapa segmen, setiap segmen menggunakan Heading 3 (###) dengan nama segmen sesuai isi.\n"
-    "- Jika hanya terdapat 1 jenis data, tampilkan langsung tanpa Heading 3.\n"
-    "- Output TIDAK menambahkan label seperti 'Konten:' atau heading tambahan lain di luar aturan ini.\n\n"
+    "STRUKTUR OUTPUT:\n"
+    "- Hanya berisi Judul Slide (Heading 2) dan Konten (Jika Ada).\n"
+    "- Jangan menambahkan label seperti 'Konten:' atau heading lain di luar aturan.\n"
+    "- Gunakan Heading 3 (###) hanya jika terdapat lebih dari satu segmen konten.\n\n"
 
-    "## Judul Slide (Heading 2)\n"
-    "- Jika slide memiliki judul eksplisit, salin teks judul secara apa adanya.\n"
-    "- Jika tidak terdapat judul eksplisit, buat frasa deskriptif ≤10 kata yang hanya menggambarkan isi slide tanpa opini, narasi, atau interpretasi.\n\n"
+    "## Judul Slide\n"
+    "- Jika ada judul eksplisit, salin apa adanya.\n"
+    "- Jika tidak ada, buat judul deskriptif ≤10 kata tanpa opini.\n\n"
 
-    "### Konten (Heading 3 per segmen jika diperlukan)\n"
-    "- Salin ulang data yang terlihat dalam bentuk tabel, daftar, atau kalimat pendek sesuai aslinya.\n"
-    "- Untuk tabel: tulis ulang menggunakan tabel Markdown dengan kolom dan label sesuai aslinya.\n"
-    "- Untuk daftar: gunakan bullet '-' atau numbering sesuai slide.\n"
-    "- Untuk grafik: jika angkanya terbaca, konversi menjadi tabel; jika tidak, tuliskan label sumbu/kategori tanpa interpretasi.\n"
-    "- Untuk paragraf: tulis ulang isi teks secara faktual tanpa menambahkan kalimat baru.\n"
-    "- Untuk infografis geografis atau peta sebaran:\n"
-    "   - tuliskan lokasi (kota/provinsi/pulau/negara), fasilitas, kantor cabang, pelabuhan, tambang, smelter, kebun, gudang, atau unit operasional yang terlihat.\n"
-    "   - sertakan angka (luas, kapasitas, hektare, tonase, km, unit) jika tersedia.\n"
-    "   - jika terdapat rute logistik/distribusi, tuliskan rute yang terlihat tanpa interpretasi.\n"
-    "   - jika terdapat cluster wilayah, tampilkan sebagai tabel atau daftar.\n"
-    "- Jika hanya terdapat satu jenis konten pada slide, tampilkan tanpa Heading 3.\n"
-    "- Jika tidak terdapat konten finansial/bisnis yang dapat dibaca, tulis: 'Tidak terdapat konten finansial atau bisnis yang dapat dibaca.'.\n\n"
+    "### Konten\n"
+    "- Tulis ulang isi slide secara faktual dalam bentuk:\n"
+    "  - tabel Markdown (jika tabel),\n"
+    "  - bullet/numbering (jika daftar),\n"
+    "  - paragraf pendek (jika teks).\n"
+    "- Untuk grafik: konversi ke tabel jika angka terbaca; jika tidak, tulis label/kategori saja.\n"
+    "- Untuk peta/infografis geografis: tulis lokasi, fasilitas, unit operasional, dan angka yang tertulis.\n"
+    "- Jangan membuat segmen untuk konten yang tidak ada.\n"
+    "- Jika tidak ada konten yang dapat dibaca, lewati tanpa memberi opini.\n\n"
 
     "INFORMASI DOKUMEN:\n"
     "- Dokumen: {document_name}\n"
@@ -79,6 +70,7 @@ PROMPT_PUBEX = PromptTemplate(
     "- Tahun: {document_year}\n"
     "- Slide: {slide_no} / {total_pages}\n\n"
 )
+
 
 
 
@@ -98,9 +90,9 @@ def _call_vlm(
             "stream": False,
             "options": {
                 "temperature": temperature,
-                "num_predict": 768,      # batasi panjang output
-                "top_p": 0.8,            # sampling lebih ketat
-                "repeat_penalty": 1.2,   # hukum pengulangan
+                # "num_predict": 768,      # batasi panjang output
+                # "top_p": 0.8,            # sampling lebih ketat
+                # "repeat_penalty": 1.2,   # hukum pengulangan
             },
         }
         response = SESSION.post(
