@@ -90,9 +90,10 @@ def _call_vlm(
             "stream": False,
             "options": {
                 "temperature": temperature,
-                # "num_predict": 768,      # batasi panjang output
-                # "top_p": 0.8,            # sampling lebih ketat
-                # "repeat_penalty": 1.2,   # hukum pengulangan
+                "num_predict": 768,      # batasi panjang output
+                "top_p": 0.8,            # sampling lebih ketat
+                "top_k": 30,             # sampling lebih ketat
+                "repeat_penalty": 1.2,   # hukum pengulangan
             },
         }
         response = SESSION.post(

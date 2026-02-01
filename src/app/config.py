@@ -15,6 +15,10 @@ DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
 DEFAULT_VLM_MODEL = os.getenv("VLM_MODEL") or "qwen3-vl:2b-instruct-q4_K_M"
 DEFAULT_DPI = int(os.getenv("INGESTION_PDF_DPI", "144"))
+DEFAULT_OLLAMA_TEST_OUTPUT_DIR = os.getenv(
+    "OLLAMA_TEST_OUTPUT_DIR",
+    str(BASE_DIR / "src/data/ollama_tests"),
+)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")

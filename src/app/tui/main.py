@@ -7,11 +7,13 @@ from app.core.ingestion_pipeline import (
     run_ingestion_multi_model as run_ingestion_multi_model_pipeline,
 )
 from app.core.embedding_pipeline import run_embedding_pipeline
+from app.core.ollama_test_pipeline import run_ollama_chat_test as run_ollama_chat_test_pipeline
 import sys
 import logging
 from typing import Callable, Dict
 
 from app.logging_config import setup_logging
+from app.config import DEFAULT_OLLAMA_TEST_OUTPUT_DIR, DEFAULT_VLM_MODEL
 logger = logging.getLogger(__name__)
 
 # ===== ANSI Colors =====
@@ -81,6 +83,7 @@ def print_menu():
     print(f"  [3] Embedding Pipeline{RESET}")
     print(f"  [4] Run QA-Bot (Chainlit){RESET}")
     print(f"  [5] Ingestion Multi-Model (Compare){RESET}")
+    print(f"  [6] Ollama Chat Test (Image Prompt){RESET}")
     print(f"  [0] {RED}Keluar{RESET}\n")
 
 
@@ -182,6 +185,37 @@ def run_embedding():
     run_embedding_pipeline(limit=limit)
 
 
+def run_ollama_chat_test():
+    print(f"\n{YELLOW}Ollama Chat Test (Image Prompt){RESET}")
+
+    image_path_text = input("Path image: ").strip()
+    # if not image_path:
+    #     print(f"{RED}Path image tidak boleh kosong.{RESET}")
+    #     return
+    image_path = image_path_text or "/home/gungsatya/Projects/pubex-qa-bot/src/data/documents/pubex/2025/AALI/slides/2097b41d-112b-48b6-96d9-72e7412aaa20/005.png"
+
+    model_text = input(f"Model (default: {DEFAULT_VLM_MODEL}): ").strip()
+    model = model_text or DEFAULT_VLM_MODEL
+
+    output_dir_text = input(
+        f"Output folder (default: {DEFAULT_OLLAMA_TEST_OUTPUT_DIR}): "
+    ).strip()
+    output_dir = output_dir_text or None
+
+    try:
+        output_path = run_ollama_chat_test_pipeline(
+            image_path=image_path,
+            model=model,
+            output_dir=output_dir,
+        )
+    except Exception as exc:
+        logger.exception("Ollama chat test error: %s", exc)
+        print(f"{RED}Error: {exc}{RESET}")
+        return
+
+    print(f"{GREEN}Selesai. Output disimpan di:{RESET} {output_path}")
+
+
 def main_loop():
     actions: Dict[str, Callable[[], None]] = {
         "1": download_documents,
@@ -189,12 +223,13 @@ def main_loop():
         "3": run_embedding,
         "4": run_chainlit,
         "5": run_ingestion_multi_model,
+        "6": run_ollama_chat_test,
     }
 
     while True:
         print_header()
         print_menu()
-        choice = input("> Pilih menu [0-5]: ").strip()
+        choice = input("> Pilih menu [0-6]: ").strip()
 
         if choice == "0":
             print(f"\n{RED}Keluar dari QA-Bot. Bye!{RESET}")
