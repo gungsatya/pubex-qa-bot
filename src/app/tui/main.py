@@ -7,13 +7,15 @@ from app.core.ingestion_pipeline import (
     run_ingestion_multi_model as run_ingestion_multi_model_pipeline,
 )
 from app.core.embedding_pipeline import run_embedding_pipeline
-from app.core.ollama_test_pipeline import run_ollama_chat_test as run_ollama_chat_test_pipeline
+from app.core.llama_cpp_test_pipeline import (
+    run_llama_cpp_chat_test as run_llama_cpp_chat_test_pipeline,
+)
 import sys
 import logging
 from typing import Callable, Dict
 
 from app.logging_config import setup_logging
-from app.config import DEFAULT_OLLAMA_TEST_OUTPUT_DIR, DEFAULT_VLM_MODEL
+from app.config import DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR, DEFAULT_VLM_MODEL
 logger = logging.getLogger(__name__)
 
 # ===== ANSI Colors =====
@@ -83,7 +85,7 @@ def print_menu():
     print(f"  [3] Embedding Pipeline{RESET}")
     print(f"  [4] Run QA-Bot (Chainlit){RESET}")
     print(f"  [5] Ingestion Multi-Model (Compare){RESET}")
-    print(f"  [6] Ollama Chat Test (Image Prompt){RESET}")
+    print(f"  [6] Llama.cpp Chat Test (Image Prompt){RESET}")
     print(f"  [0] {RED}Keluar{RESET}\n")
 
 
@@ -185,8 +187,8 @@ def run_embedding():
     run_embedding_pipeline(limit=limit)
 
 
-def run_ollama_chat_test():
-    print(f"\n{YELLOW}Ollama Chat Test (Image Prompt){RESET}")
+def run_llama_cpp_chat_test():
+    print(f"\n{YELLOW}Llama.cpp Chat Test (Image Prompt){RESET}")
 
     image_path_text = input("Path image: ").strip()
     # if not image_path:
@@ -198,18 +200,18 @@ def run_ollama_chat_test():
     model = model_text or DEFAULT_VLM_MODEL
 
     output_dir_text = input(
-        f"Output folder (default: {DEFAULT_OLLAMA_TEST_OUTPUT_DIR}): "
+        f"Output folder (default: {DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR}): "
     ).strip()
     output_dir = output_dir_text or None
 
     try:
-        output_path = run_ollama_chat_test_pipeline(
+        output_path = run_llama_cpp_chat_test_pipeline(
             image_path=image_path,
             model=model,
             output_dir=output_dir,
         )
     except Exception as exc:
-        logger.exception("Ollama chat test error: %s", exc)
+        logger.exception("Llama.cpp chat test error: %s", exc)
         print(f"{RED}Error: {exc}{RESET}")
         return
 
@@ -223,7 +225,7 @@ def main_loop():
         "3": run_embedding,
         "4": run_chainlit,
         "5": run_ingestion_multi_model,
-        "6": run_ollama_chat_test,
+        "6": run_llama_cpp_chat_test,
     }
 
     while True:

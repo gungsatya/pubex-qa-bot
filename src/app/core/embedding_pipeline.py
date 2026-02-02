@@ -1,29 +1,55 @@
 from __future__ import annotations
 
 import logging
-import os
 import math
+import os
 from typing import Iterable, List, Tuple
 
+import requests
 from sqlalchemy import select, func
 
 from app.db.models import Slide, Document, EMBEDDING_DIM
 from app.db.session import get_session
+from app.config import DEFAULT_LLAMA_CPP_BASE_URL, DEFAULT_LLAMA_CPP_TIMEOUT
 from src.data.enums import DocumentStatusEnum
 
-try:
-    from llama_index.embeddings.ollama import OllamaEmbedding
-except ImportError as exc:  # pragma: no cover - guarded for runtime safety
-    raise RuntimeError(
-        "LlamaIndex Ollama embedding belum terpasang. "
-        "Install dengan 'pip install llama-index-embeddings-ollama'."
-    ) from exc
-
 logger = logging.getLogger(__name__)
+SESSION = requests.Session()
 
-DEFAULT_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3:latest")
-DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_EMBED_BASE_URL", "http://localhost:11434")
+DEFAULT_EMBED_MODEL = os.getenv("LLAMA_CPP_EMBED_MODEL", "embedding")
+DEFAULT_LLAMA_CPP_EMBED_BASE_URL = os.getenv(
+    "LLAMA_CPP_EMBED_BASE_URL", DEFAULT_LLAMA_CPP_BASE_URL
+)
 DEFAULT_EMBED_BATCH = int(os.getenv("EMBED_BATCH_SIZE", "10"))
+
+
+def _fetch_embeddings(
+    *,
+    texts: List[str],
+    model_name: str,
+    base_url: str,
+    timeout: int,
+) -> List[List[float]]:
+    payload = {
+        "model": model_name,
+        "input": texts,
+        "encoding_format": "float",
+    }
+    response = SESSION.post(
+        f"{base_url.rstrip('/')}/v1/embeddings",
+        json=payload,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    items = data.get("data")
+    if not isinstance(items, list):
+        raise RuntimeError(f"Unexpected embeddings response: {data}")
+    try:
+        items_sorted = sorted(items, key=lambda item: item.get("index", 0))
+        return [item["embedding"] for item in items_sorted]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(f"Invalid embeddings payload: {data}") from exc
 
 
 def _get_slides_to_embed(limit: int | None) -> List[Slide]:
@@ -96,7 +122,7 @@ def run_embedding_pipeline(
     *,
     limit: int | None = None,
     model_name: str = DEFAULT_EMBED_MODEL,
-    base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    base_url: str = DEFAULT_LLAMA_CPP_EMBED_BASE_URL,
     batch_size: int = DEFAULT_EMBED_BATCH,
 ) -> None:
     slides = _get_slides_to_embed(limit)
@@ -104,12 +130,6 @@ def run_embedding_pipeline(
         logger.info("Tidak ada slide untuk di-embed.")
         print("Tidak ada slide untuk di-embed.")
         return
-
-    embed_model = OllamaEmbedding(
-        model_name=model_name,
-        base_url=base_url,
-        embed_batch_size=batch_size,
-    )
 
     for batch in _chunk(slides, batch_size):
         slides_with_text, texts = _prepare_texts(batch)
@@ -119,9 +139,12 @@ def run_embedding_pipeline(
 
         embeddings: List[List[float]] = []
         try:
-            embeddings = embed_model.get_text_embeddings(texts)
-        except AttributeError:
-            embeddings = [embed_model.get_text_embedding(t) for t in texts]
+            embeddings = _fetch_embeddings(
+                texts=texts,
+                model_name=model_name,
+                base_url=base_url,
+                timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Gagal generate embedding batch, fallback per item: %s", exc
@@ -129,7 +152,14 @@ def run_embedding_pipeline(
             embeddings = []
             for text in texts:
                 try:
-                    embeddings.append(embed_model.get_text_embedding(text))
+                    embeddings.extend(
+                        _fetch_embeddings(
+                            texts=[text],
+                            model_name=model_name,
+                            base_url=base_url,
+                            timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
+                        )
+                    )
                 except Exception as per_exc:  # noqa: BLE001
                     logger.exception("Gagal embed item, dilewati: %s", per_exc)
                     embeddings.append([])

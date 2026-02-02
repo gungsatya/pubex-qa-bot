@@ -12,9 +12,9 @@ from typing import Any
 import requests
 
 from app.config import (
-    DEFAULT_OLLAMA_BASE_URL,
-    DEFAULT_OLLAMA_TIMEOUT,
-    DEFAULT_OLLAMA_TEST_OUTPUT_DIR,
+    DEFAULT_LLAMA_CPP_BASE_URL,
+    DEFAULT_LLAMA_CPP_TIMEOUT,
+    DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR,
     DEFAULT_VLM_MODEL,
 )
 from app.core.ingestion_pipeline import PROMPT_PUBEX
@@ -46,7 +46,7 @@ def _build_markdown_header(
     options_text = json.dumps(options or {}, ensure_ascii=True, sort_keys=True)
     response_text = json.dumps(response_meta, ensure_ascii=True, sort_keys=True, indent=2)
     header_lines = [
-        "# Ollama Chat Test",
+        "# Llama.cpp Chat Test",
         "",
         f"- Model: {model}",
         f"- Options: {options_text}",
@@ -54,7 +54,7 @@ def _build_markdown_header(
         f"- Image: {image_path}",
         f"- Prompt: {prompt}",
         "",
-        "## Ollama Response Meta",
+        "## Llama.cpp Response Meta",
         "```json",
         response_text,
         "```",
@@ -65,11 +65,11 @@ def _build_markdown_header(
     return "\n".join(header_lines)
 
 
-def run_ollama_chat_test(
+def run_llama_cpp_chat_test(
     *,
     image_path: str,
     model: str | None = None,
-    base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    base_url: str = DEFAULT_LLAMA_CPP_BASE_URL,
     output_dir: str | Path | None = None,
 ) -> Path:
     model = model or DEFAULT_VLM_MODEL
@@ -98,40 +98,53 @@ def run_ollama_chat_test(
         "repeat_penalty": 1.2,   # hukum pengulangan
     }
 
+    image_b64 = base64.b64encode(image_bytes).decode("ascii")
     payload: dict[str, Any] = {
         "model": model,
-        "stream": False,
         "messages": [
             {
                 "role": "user",
-                "content": prompt,
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_b64}"
+                        },
+                    },
+                ],
             }
         ],
+        "temperature": options["temperature"],
+        "max_tokens": options["num_predict"],
+        "top_p": options["top_p"],
+        "top_k": options["top_k"],
+        "repeat_penalty": options["repeat_penalty"],
     }
-    payload["options"] = options
 
     start = time.monotonic()
     try:
         response = SESSION.post(
-            f"{base_url.rstrip('/')}/api/chat",
+            f"{base_url.rstrip('/')}/v1/chat/completions",
             json=payload,
-            timeout=DEFAULT_OLLAMA_TIMEOUT,
+            timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
         )
         response.raise_for_status()
         data = response.json()
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"Ollama chat error: {exc}") from exc
+        raise RuntimeError(f"llama.cpp chat error: {exc}") from exc
     elapsed = time.monotonic() - start
 
     try:
-        content = data["message"]["content"]
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected response from Ollama: {data}") from exc
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected response from llama.cpp: {data}") from exc
 
-    response_meta = {k: v for k, v in data.items() if k != "message"}
+    response_meta = {k: v for k, v in data.items() if k != "choices"}
 
-    output_root = Path(output_dir) if output_dir else Path(DEFAULT_OLLAMA_TEST_OUTPUT_DIR)
+    output_root = (
+        Path(output_dir) if output_dir else Path(DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR)
+    )
     output_root.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -149,5 +162,5 @@ def run_ollama_chat_test(
     output_text = header + content.strip() + "\n"
     output_path.write_text(output_text, encoding="utf-8")
 
-    logger.info("Ollama chat test saved: %s (%.2fs)", output_path, elapsed)
+    logger.info("Llama.cpp chat test saved: %s (%.2fs)", output_path, elapsed)
     return output_path

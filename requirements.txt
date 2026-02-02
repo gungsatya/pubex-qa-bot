@@ -19,7 +19,7 @@ pillow==10.3.0
 tqdm==4.66.2
 requests==2.31.0
 llama-index-core==0.13.0
-llama-index-embeddings-ollama==0.8.6
 
 cloudscraper==1.2.71
 streamlit
+huggingface_hub

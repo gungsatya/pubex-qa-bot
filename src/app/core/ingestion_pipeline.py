@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
 from pathlib import Path
 import json
 import re
@@ -13,10 +12,15 @@ import requests
 from sqlalchemy import select, func
 
 from app.utils.document_utils import pdf_to_images, count_pdf_pages
-from app.utils.image_utils import validate_image_bytes
+from app.utils.image_utils import downscale_png, validate_image_bytes
 from app.db.models import Document, Slide
 from app.db.session import get_session
-from src.app.config import DEFAULT_DPI, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_TIMEOUT, DEFAULT_VLM_MODEL
+from src.app.config import (
+    DEFAULT_DPI,
+    DEFAULT_LLAMA_CPP_BASE_URL,
+    DEFAULT_LLAMA_CPP_TIMEOUT,
+    DEFAULT_VLM_MODEL,
+)
 from src.data.enums import DocumentStatusEnum
 from src.app.utils.telegram import send_telegram_message
 
@@ -79,37 +83,53 @@ def _call_vlm(
     model: str,
     prompt: str,
     image_bytes: bytes,
-    base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    base_url: str = DEFAULT_LLAMA_CPP_BASE_URL,
     temperature: float = 0.2,
 ) -> str:
     try:
+        image_bytes = downscale_png(image_bytes, max_w=1280)
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
         payload = {
             "model": model,
-            "prompt": prompt,
-            "images": [base64.b64encode(image_bytes).decode("ascii")],
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": 768,      # batasi panjang output
-                "top_p": 0.8,            # sampling lebih ketat
-                "top_k": 30,             # sampling lebih ketat
-                "repeat_penalty": 1.2,   # hukum pengulangan
-            },
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_b64}"
+                            },
+                        },
+                    ],
+                }
+            ],
+            "temperature": temperature,
+            "max_tokens": 768,  # batasi panjang output
+            "top_p": 0.8,  # sampling lebih ketat
+            "top_k": 30,  # sampling lebih ketat
+            "repeat_penalty": 1.2,  # hukum pengulangan
         }
         response = SESSION.post(
-            f"{base_url.rstrip('/')}/api/generate",
+            f"{base_url.rstrip('/')}/v1/chat/completions",
             json=payload,
-            timeout=DEFAULT_OLLAMA_TIMEOUT,
+            timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"llama.cpp HTTP {response.status_code}: {response.text}"
+            )
+            
         data = response.json()
+        
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"VLM error (ollama generate): {exc}") from exc
+        raise RuntimeError(f"VLM error (llama.cpp chat): {exc}") from exc
 
     try:
-        return data["response"]
+        return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected response from VLM: {data}") from exc
+        raise RuntimeError(f"Unexpected response from llama.cpp: {data}") from exc
 
 
 def _get_downloaded_documents(limit: int | None) -> Iterable[Document]:

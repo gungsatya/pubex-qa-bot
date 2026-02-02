@@ -11,13 +11,13 @@ if ENV_PATH.exists():
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
-DEFAULT_VLM_MODEL = os.getenv("VLM_MODEL") or "qwen3-vl:2b-instruct-q4_K_M"
-DEFAULT_DPI = int(os.getenv("INGESTION_PDF_DPI", "144"))
-DEFAULT_OLLAMA_TEST_OUTPUT_DIR = os.getenv(
-    "OLLAMA_TEST_OUTPUT_DIR",
-    str(BASE_DIR / "src/data/ollama_tests"),
+DEFAULT_LLAMA_CPP_BASE_URL = os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080")
+DEFAULT_LLAMA_CPP_TIMEOUT = int(os.getenv("LLAMA_CPP_TIMEOUT_SECONDS", "300"))
+DEFAULT_VLM_MODEL = os.getenv("VLM_MODEL") or "vlm-model"
+DEFAULT_DPI = int(os.getenv("INGESTION_PDF_DPI", "120"))
+DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR = os.getenv(
+    "LLAMA_CPP_TEST_OUTPUT_DIR",
+    str(BASE_DIR / "src/data/llama_cpp_tests"),
 )
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
