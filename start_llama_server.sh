@@ -10,10 +10,11 @@ HF_MODEL="Qwen/Qwen3-VL-2B-Instruct-GGUF"
 
 HOST="127.0.0.1"
 PORT="8080"
-GPU_LAYERS="29"
-CTX_SIZE="6144"
-THREADS="8"
+GPU_LAYERS="32"
+CTX_SIZE="5120"
+THREADS="6"
 PARALLEL="1"
+CACHE_SIZE="2048"
 
 echo "======================================"
 echo " Starting LLaMA Server (Multimodal)"
@@ -34,4 +35,4 @@ exec "$LLAMA_BIN/llama-server" \
   --threads "$THREADS" \
   --parallel "$PARALLEL" \
   --no-warmup \
-  --cache-ram 2048
+  --cache-ram "$CACHE_SIZE" 
