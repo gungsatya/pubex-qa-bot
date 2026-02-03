@@ -14,6 +14,7 @@ GPU_LAYERS="32"
 CTX_SIZE="5120"
 THREADS="6"
 PARALLEL="1"
+BATCH_SIZE="2048"
 CACHE_SIZE="2048"
 
 echo "======================================"
@@ -35,4 +36,5 @@ exec "$LLAMA_BIN/llama-server" \
   --threads "$THREADS" \
   --parallel "$PARALLEL" \
   --no-warmup \
-  --cache-ram "$CACHE_SIZE" 
+  --cache-ram "$CACHE_SIZE" \
+  --batch-size "$BATCH_SIZE"
