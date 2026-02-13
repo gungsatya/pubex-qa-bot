@@ -30,7 +30,7 @@ def load_slide_image_bytes(image_path: str | None) -> bytes | None:
 
 def downscale_png(img_bytes: bytes, max_w: int = 1280) -> bytes:
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    if img.width <= max_w:
+    if img.width <= max_w and max_w > 0:
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         return buf.getvalue()

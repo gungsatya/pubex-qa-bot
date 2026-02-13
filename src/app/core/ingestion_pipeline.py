@@ -1,147 +1,278 @@
 from __future__ import annotations
 
-import base64
 import logging
-from pathlib import Path
-import json
-import re
-from typing import Iterable
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable, Sequence
 
-import requests
 from sqlalchemy import select, func
 
 from app.utils.document_utils import pdf_to_images, count_pdf_pages
 from app.utils.image_utils import downscale_png, validate_image_bytes
 from app.db.models import Document, Slide
 from app.db.session import get_session
-from src.app.config import (
-    DEFAULT_DPI,
-    DEFAULT_LLAMA_CPP_BASE_URL,
-    DEFAULT_LLAMA_CPP_TIMEOUT,
-    DEFAULT_VLM_MODEL,
-)
+from app.core.ollama_vlm import generate_vlm
+from app.config import LLM, VLM
 from src.data.enums import DocumentStatusEnum
-from src.app.utils.telegram import send_telegram_message
-
-try:
-    from llama_index.core.prompts import PromptTemplate
-except ImportError as exc:  # pragma: no cover - guarded for runtime safety
-    raise RuntimeError(
-        "LlamaIndex tidak ditemukan. Install dengan 'pip install llama-index'."
-    ) from exc
 
 logger = logging.getLogger(__name__)
 
-SESSION = requests.Session()
+PROMPT_VLM_SINGLE = """You will be provided with an image of a PDF page or slide.
 
-PROMPT_PUBEX = PromptTemplate(
-    "Anda adalah Konsultan Keuangan yang mengekstraksi isi slide Public Expose (Pubex) "
-    "menjadi teks Markdown untuk sistem Tanya Jawab berbasis RAG.\n\n"
+Your task is to convert ALL visible content into structured Markdown format.
 
-    "ATURAN UTAMA:\n"
-    "- Ekstraksi HANYA dari konten yang terlihat: teks, angka, tabel, grafik, daftar, diagram, atau peta.\n"
-    "- Abaikan visual non-informatif: foto manusia, ekspresi, ikon dekoratif, ornamen, warna, latar, estetika.\n"
-    "- Jangan menebak, menyimpulkan, atau menambah informasi.\n"
-    "- Jika tidak terbaca atau ambigu, lewati.\n"
-    "- Hindari frasa presentasi seperti: 'pada slide ini', 'dapat dilihat', 'berikut ini', atau kalimat generik.\n"
-    "- Jika konten sangat sedikit, salin apa adanya tanpa narasi tambahan.\n"
-    "- Dilarang menambah informasi dokumen dalam hasil ekstraksi.\n"
-    "- Output WAJIB Markdown berbahasa Indonesia.\n\n"
+You MUST act as a visual transcription and formatting system, NOT as an analyst.
 
-    "STRUKTUR OUTPUT:\n"
-    "- Hanya berisi Judul Slide (Heading 2) dan Konten (Jika Ada).\n"
-    "- Jangan menambahkan label seperti 'Konten:' atau heading lain di luar aturan.\n"
-    "- Gunakan Heading 3 (###) hanya jika terdapat lebih dari satu segmen konten.\n\n"
+====================================
+PRIMARY OBJECTIVE
+====================================
 
-    "## Judul Slide\n"
-    "- Jika ada judul eksplisit, salin apa adanya.\n"
-    "- Jika tidak ada, buat judul deskriptif ≤10 kata tanpa opini.\n\n"
+- Extract ONLY text, numbers, tables, and labels that are clearly visible.
+- Preserve original meaning and wording.
+- Do NOT summarize, interpret, explain, or rephrase.
+- Do NOT add any new information.
+- Do NOT guess missing or unclear content.
+- If content is unreadable -> omit it.
 
-    "### Konten\n"
-    "- Tulis ulang isi slide secara faktual dalam bentuk:\n"
-    "  - tabel Markdown (jika tabel),\n"
-    "  - bullet/numbering (jika daftar),\n"
-    "  - paragraf pendek (jika teks).\n"
-    "- Untuk grafik: konversi ke tabel jika angka terbaca; jika tidak, tulis label/kategori saja.\n"
-    "- Untuk peta/infografis geografis: tulis lokasi, fasilitas, unit operasional, dan angka yang tertulis.\n"
-    "- Jangan membuat segmen untuk konten yang tidak ada.\n"
-    "- Jika tidak ada konten yang dapat dibaca, lewati tanpa memberi opini.\n\n"
+====================================
+GENERAL RULES
+====================================
 
-    "INFORMASI DOKUMEN:\n"
-    "- Dokumen: {document_name}\n"
-    "- Emiten: {issuer_name} ({issuer_code})\n"
-    "- Tahun: {document_year}\n"
-    "- Slide: {slide_no} / {total_pages}\n\n"
-)
+1. All output MUST be in valid Markdown.
+2. Maintain original language as shown.
+3. Keep spelling, capitalization, and numeric values unchanged.
+4. Do NOT add commentary, opinions, or conclusions.
+5. Do NOT mention document format (PDF, slide, page, image, etc).
+6. Do NOT describe layout or positions.
+
+====================================
+TITLE HANDLING
+====================================
+
+If a clear title exists:
+
+- Write it as:
+
+## {Title}
+
+If no title exists:
+
+- Do NOT create one.
+
+====================================
+TEXT & LISTS
+====================================
+
+- Paragraphs -> normal Markdown text
+- Bullet points -> Markdown lists
+- Numbered items -> ordered lists
+
+Example:
+
+- Item A
+- Item B
+
+1. Step One
+2. Step Two
+
+====================================
+TABLES
+====================================
+
+If content appears in tabular form, convert it into Markdown tables.
+
+Example:
+
+| Column A | Column B |
+|----------|----------|
+| Value 1  | Value 2  |
+
+====================================
+CHARTS / GRAPHS
+====================================
+
+If charts or graphs are present:
+
+- Convert all visible numeric data into tables OR lists.
+- Include labels, units, and legends if visible.
+- Do NOT interpret trends.
+
+Example (Table):
+
+| Year | Revenue |
+|------|----------|
+| 2023 | 120      |
+| 2024 | 150      |
+
+Example (List):
+
+- 2023: 120
+- 2024: 150
+
+====================================
+INFOGRAPHICS / MAPS / DIAGRAMS
+====================================
+
+If infographics, maps, or diagrams are present:
+
+- Convert visible data into structured lists or tables.
+- Include names, markers, labels, and values.
+- Do NOT explain meaning.
+
+Example (List):
+
+- Factory: Jakarta
+- Warehouse: Surabaya
+- Port: Belawan
+
+====================================
+IMAGES WITH TEXT
+====================================
+
+- Extract all readable text inside images.
+- Ignore decorative or unreadable elements.
+
+====================================
+OUTPUT FORMAT
+====================================
+
+If title exists:
+
+## {Title}
+
+{Markdown content}
+
+If no title:
+
+{Markdown content only}
+
+====================================
+STRICT PROHIBITIONS
+====================================
+
+No interpretation
+No summarization
+No rewording
+No hallucination
+No inference
+No explanation
+
+Only transcribe and format what is visible.
+"""
+
+def _build_pubex_prompts() -> tuple[str, str]:
+    system_prompt = PROMPT_VLM_SINGLE
+    prompt = ""
+    return system_prompt, prompt
 
 
+def _prepare_vlm_image_bytes(image_bytes: bytes) -> bytes:
+    return downscale_png(image_bytes, max_w=VLM.image_max_w)
 
 
 def _call_vlm(
     *,
     model: str,
-    prompt: str,
+    system_prompt: str,
     image_bytes: bytes,
-    base_url: str = DEFAULT_LLAMA_CPP_BASE_URL,
-    temperature: float = 0.2,
+    temperature: float = VLM.temperature,
 ) -> str:
     try:
-        image_bytes = downscale_png(image_bytes, max_w=1280)
-        image_b64 = base64.b64encode(image_bytes).decode("ascii")
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_b64}"
-                            },
-                        },
-                    ],
-                }
-            ],
-            "temperature": temperature,
-            "max_tokens": 768,  # batasi panjang output
-            "top_p": 0.8,  # sampling lebih ketat
-            "top_k": 30,  # sampling lebih ketat
-            "repeat_penalty": 1.2,  # hukum pengulangan
-        }
-        response = SESSION.post(
-            f"{base_url.rstrip('/')}/v1/chat/completions",
-            json=payload,
-            timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
+        image_bytes = _prepare_vlm_image_bytes(image_bytes)
+        return generate_vlm(
+            model_id=model,
+            system_prompt=system_prompt.strip(),
+            image_bytes=image_bytes,
+            gen_kwargs={
+                "temperature": temperature,
+            },
         )
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"llama.cpp HTTP {response.status_code}: {response.text}"
-            )
-            
-        data = response.json()
-        
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"VLM error (llama.cpp chat): {exc}") from exc
-
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected response from llama.cpp: {data}") from exc
+        raise RuntimeError(f"VLM error (Ollama): {exc}") from exc
 
 
-def _get_downloaded_documents(limit: int | None) -> Iterable[Document]:
+def _is_kosong_marker(content: str) -> bool:
+    return (content or "").strip() == "[[KOSONG]]"
+
+
+def _extract_pubex_single_prompt(
+    *,
+    model: str,
+    image_bytes: bytes,
+) -> str:
+    system_prompt, prompt = _build_pubex_prompts()
+    raw_result = _call_vlm(
+        model=model,
+        system_prompt=system_prompt,
+        image_bytes=image_bytes,
+    )
+    if _is_kosong_marker(raw_result):
+        return ""
+    return raw_result
+
+
+def _store_slide(
+    *,
+    session,
+    document_id: str,
+    slide_no: int,
+    total_pages: int,
+    pdf_path: Path,
+    slide_dir: Path,
+    image_bytes: bytes,
+    content_md: str,
+    model: str,
+    text_model: str,
+    dpi: int,
+    note: str | None,
+    extractor_method: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> None:
+    image_path = slide_dir / f"{slide_no:03}.png"
+    image_path.write_bytes(image_bytes)
+
+    slide_metadata = {
+        "slide_no": slide_no,
+        "total_pages": total_pages,
+        "file_path": str(pdf_path),
+        "image_mime": "image/png",
+        "dpi": dpi,
+        "vlm_model": model,
+        "llm_model": text_model,
+        "extractor_method": extractor_method,
+    }
+    if note:
+        slide_metadata["ingestion_note"] = note
+
+    slide = Slide(
+        document_id=document_id,
+        content_text=content_md,
+        image_path=str(image_path),
+        slide_metadata=slide_metadata,
+        ingestion_start_at=start_at,
+        ingestion_end_at=end_at,
+    )
+    session.add(slide)
+
+
+def _get_downloaded_documents(
+    limit: int | None,
+    document_ids: Sequence[str] | None = None,
+) -> Iterable[Document]:
     with get_session() as session:
-        stmt = select(Document).where(
-            Document.status.in_(
-                [
-                    DocumentStatusEnum.DOWNLOADED.id,
-                    DocumentStatusEnum.FAILED_PARSED.id,
-                ]
+        stmt = select(Document)
+        if document_ids:
+            stmt = stmt.where(Document.id.in_(document_ids))
+        else:
+            stmt = stmt.where(
+                Document.status.in_(
+                    [
+                        DocumentStatusEnum.DOWNLOADED.id,
+                        DocumentStatusEnum.FAILED_PARSED.id,
+                    ]
+                )
             )
-        )
         if limit is not None:
             stmt = stmt.limit(limit)
         result = session.execute(stmt)
@@ -172,29 +303,6 @@ def _delete_existing_slides(
     return int(deleted or 0)
 
 
-def _extract_year(doc: Document, pdf_path: Path) -> str:
-    if doc.publish_at:
-        return str(doc.publish_at.year)
-    collection_metadata = doc.collection.collection_metadata if doc.collection else None
-    if isinstance(collection_metadata, dict):
-        year = collection_metadata.get("year")
-        if isinstance(year, int):
-            return str(year)
-        if isinstance(year, str) and year.strip():
-            return year.strip()
-    if isinstance(doc.document_metadata, dict):
-        year = doc.document_metadata.get("year")
-        if isinstance(year, int):
-            return str(year)
-        if isinstance(year, str) and year.strip():
-            return year.strip()
-    candidates = f"{doc.name or ''} {pdf_path.name}"
-    match = re.search(r"(19|20)\\d{2}", candidates)
-    if match:
-        return match.group(0)
-    return "Tidak diketahui"
-
-
 def _infer_document_type(doc: Document) -> str:
     collection_metadata = doc.collection.collection_metadata if doc.collection else None
     if isinstance(collection_metadata, dict):
@@ -213,11 +321,12 @@ def _process_document(
     document_id: str,
     pdf_path: Path,
     model: str,
+    text_model: str,
     dpi: int,
+    note: str | None = None,
     overwrite_mode: str = "document",
     update_doc_status: bool = True,
 ) -> bool:
-    
     total_pages = count_pdf_pages(pdf_path)
     if total_pages == 0:
         logger.warning("PDF kosong: %s", pdf_path)
@@ -229,16 +338,7 @@ def _process_document(
         if doc is None:
             logger.warning("Dokumen tidak ditemukan: %s", document_id)
             return False
-        issuer_name = doc.issuer.name if doc.issuer else "Tidak diketahui"
-        issuer_code = doc.issuer.code if doc.issuer else "Tidak diketahui"
-        document_name = doc.name or pdf_path.name
-        document_year = _extract_year(doc, pdf_path)
         document_type = _infer_document_type(doc)
-        document_metadata = (
-            json.dumps(doc.document_metadata, ensure_ascii=True, sort_keys=True)
-            if doc.document_metadata
-            else "-"
-        )
 
         if overwrite_mode not in {"document", "model", "none"}:
             raise ValueError(
@@ -288,36 +388,19 @@ def _process_document(
                 success = False
                 continue
 
-            if document_type == "pubex":
-                try:
-                    prompt = PROMPT_PUBEX.format(
-                        document_name=document_name,
-                        issuer_name=issuer_name,
-                        issuer_code=issuer_code,
-                        document_year=document_year,
-                        document_metadata=document_metadata,
-                        slide_no=slide_no,
-                        total_pages=total_pages,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception(
-                        "Gagal format prompt untuk doc_id=%s slide=%s: %s",
-                        document_id,
-                        slide_no,
-                        exc,
-                    )
-                    success = False
-                    continue
-            else:
-                prompt = ""
-
             start_at = datetime.now(timezone.utc)
+
             try:
-                content_md = _call_vlm(
-                    model=model,
-                    prompt=prompt,
-                    image_bytes=img_bytes,
-                )
+                if document_type == "pubex":
+                    raw_md = _extract_pubex_single_prompt(
+                        model=model,
+                        image_bytes=img_bytes,
+                    )
+                    content_md = raw_md
+                    extractor_method = "pubex_single_prompt_ollama"
+                else:
+                    content_md = ""
+                    extractor_method = "unsupported_document_type"
                 end_at = datetime.now(timezone.utc)
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
@@ -329,25 +412,23 @@ def _process_document(
                 success = False
                 continue
 
-            image_path = slide_dir / f"{slide_no:03}.png"
-            image_path.write_bytes(img_bytes)
-
-            slide = Slide(
+            _store_slide(
+                session=session,
                 document_id=document_id,
-                content_text=content_md.strip(),
-                image_path=str(image_path),
-                slide_metadata={
-                    "slide_no": slide_no,
-                    "total_pages": total_pages,
-                    "file_path": str(pdf_path),
-                    "image_mime": "image/png",
-                    "dpi": dpi,
-                    "vlm_model": model,
-                },
-                ingestion_start_at=start_at,
-                ingestion_end_at=end_at,
+                slide_no=slide_no,
+                total_pages=total_pages,
+                pdf_path=pdf_path,
+                slide_dir=slide_dir,
+                image_bytes=img_bytes,
+                content_md=content_md,
+                model=model,
+                text_model=text_model,
+                dpi=dpi,
+                note=note,
+                extractor_method=extractor_method,
+                start_at=start_at,
+                end_at=end_at,
             )
-            session.add(slide)
             logger.info(
                 "Selesai proses slide %s/%s doc_id=%s",
                 slide_no,
@@ -369,27 +450,52 @@ def _process_document(
 def run_ingestion(
     *,
     limit: int | None = None,
-    model: str = DEFAULT_VLM_MODEL,
-    dpi: int = DEFAULT_DPI,
+    document_ids: Sequence[str] | None = None,
+    note: str | None = None,
+    model: str = VLM.model,
+    text_model: str = LLM.model,
+    dpi: int = VLM.ingestion_pdf_dpi,
     overwrite_mode: str = "document",
     update_doc_status: bool = True,
 ) -> None:
+    document_ids = [
+        doc_id.strip()
+        for doc_id in (document_ids or [])
+        if doc_id and doc_id.strip()
+    ]
+    note = note.strip() if note else None
+
+    if document_ids:
+        # Explicit document selection should not mutate document lifecycle state.
+        update_doc_status = False
+
+    logger.info(
+        "Konfigurasi ingestion: vlm_model=%s, llm_model=%s",
+        model,
+        text_model,
+    )
+
     start_at = datetime.now(timezone.utc)
-    docs = _get_downloaded_documents(limit)
+    docs = _get_downloaded_documents(limit, document_ids=document_ids)
     if not docs:
-        logger.info("Tidak ada dokumen berstatus downloaded.")
-        print("Tidak ada dokumen berstatus downloaded.")
+        if document_ids:
+            logger.info("Tidak ada dokumen untuk id yang diberikan: %s", ", ".join(document_ids))
+            print("Tidak ada dokumen untuk id yang diberikan.")
+        else:
+            logger.info("Tidak ada dokumen berstatus downloaded.")
+            print("Tidak ada dokumen berstatus downloaded.")
         return
 
     for doc in docs:
         pdf_path = Path(doc.file_path)
         if not pdf_path.is_file():
             logger.error("File PDF tidak ditemukan: %s", pdf_path)
-            with get_session() as session:
-                db_doc = session.get(Document, doc.id)
-                if db_doc:
-                    db_doc.status = DocumentStatusEnum.FAILED_PARSED.id
-                    session.commit()
+            if update_doc_status:
+                with get_session() as session:
+                    db_doc = session.get(Document, doc.id)
+                    if db_doc:
+                        db_doc.status = DocumentStatusEnum.FAILED_PARSED.id
+                        session.commit()
             continue
 
         logger.info("Memproses doc_id=%s (%s)", doc.id, pdf_path.name)
@@ -397,7 +503,9 @@ def run_ingestion(
             document_id=doc.id,
             pdf_path=pdf_path,
             model=model,
+            text_model=text_model,
             dpi=dpi,
+            note=note,
             overwrite_mode=overwrite_mode,
             update_doc_status=update_doc_status,
         )
@@ -408,105 +516,3 @@ def run_ingestion(
     seconds = int(total_seconds % 60)
     logger.info("Durasi ingestion total: %s menit %s detik", minutes, seconds)
     print(f"Durasi ingestion total: {minutes} menit {seconds} detik")
-
-
-def run_ingestion_multi_model(
-    *,
-    models: Iterable[str],
-    limit: int | None = None,
-    dpi: int = DEFAULT_DPI,
-    overwrite_mode: str = "model",
-    update_doc_status: bool = False,
-) -> None:
-    model_list = [m.strip() for m in models if m and m.strip()]
-    if not model_list:
-        logger.info("Tidak ada model yang diberikan untuk ingestion multi-model.")
-        print("Tidak ada model yang diberikan untuk ingestion multi-model.")
-        return
-
-    start_at = datetime.now(timezone.utc)
-    docs = _get_downloaded_documents(limit)
-    if not docs:
-        logger.info("Tidak ada dokumen berstatus downloaded.")
-        print("Tidak ada dokumen berstatus downloaded.")
-        return
-
-    send_telegram_message(
-        (
-            "Mulai komparasi ingestion.\n"
-            f"Model: {', '.join(model_list)}\n"
-            f"Dokumen: {len(docs)}"
-        ),
-    )
-
-    comparison_stats: dict[str, dict[str, int]] = {
-        model: {"docs_success": 0, "slides": 0} for model in model_list
-    }
-
-    for doc in docs:
-        pdf_path = Path(doc.file_path)
-        if not pdf_path.is_file():
-            logger.error("File PDF tidak ditemukan: %s", pdf_path)
-            with get_session() as session:
-                db_doc = session.get(Document, doc.id)
-                if db_doc and update_doc_status:
-                    db_doc.status = DocumentStatusEnum.FAILED_PARSED.id
-                    session.commit()
-            continue
-
-        per_doc_counts: dict[str, int] = {}
-        for model in model_list:
-            logger.info(
-                "Memproses doc_id=%s (%s) dengan model=%s",
-                doc.id,
-                pdf_path.name,
-                model,
-            )
-            success = _process_document(
-                document_id=doc.id,
-                pdf_path=pdf_path,
-                model=model,
-                dpi=dpi,
-                overwrite_mode=overwrite_mode,
-                update_doc_status=update_doc_status,
-            )
-            with get_session() as session:
-                per_doc_counts[model] = _count_existing_slides(
-                    session, doc.id, model
-                )
-            if success:
-                comparison_stats[model]["docs_success"] += 1
-            comparison_stats[model]["slides"] += per_doc_counts[model]
-
-        doc_name = doc.name or pdf_path.name
-        per_model_text = ", ".join(
-            f"{model}={per_doc_counts.get(model, 0)}" for model in model_list
-        )
-        send_telegram_message(
-            (
-                "Progress komparasi ingestion (tanpa notif).\n"
-                f"Dokumen: {doc_name}\n"
-                f"Slides per model: {per_model_text}"
-            ),
-            disable_notification=True,
-        )
-
-    end_at = datetime.now(timezone.utc)
-    total_seconds = (end_at - start_at).total_seconds()
-    minutes = int(total_seconds // 60)
-    seconds = int(total_seconds % 60)
-    logger.info("Durasi ingestion total: %s menit %s detik", minutes, seconds)
-    print(f"Durasi ingestion total: {minutes} menit {seconds} detik")
-
-    comparison_lines = [
-        "Selesai komparasi ingestion.",
-        f"Dokumen diproses: {len(docs)}",
-        f"Durasi total: {minutes} menit {seconds} detik",
-        "Perbandingan hasil:",
-    ]
-    for model in model_list:
-        stats = comparison_stats[model]
-        comparison_lines.append(
-            f"- {model}: docs_success={stats['docs_success']}, slides={stats['slides']}"
-        )
-    send_telegram_message("\n".join(comparison_lines))

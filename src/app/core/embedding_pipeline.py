@@ -2,54 +2,55 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from typing import Iterable, List, Tuple
 
-import requests
 from sqlalchemy import select, func
 
 from app.db.models import Slide, Document, EMBEDDING_DIM
 from app.db.session import get_session
-from app.config import DEFAULT_LLAMA_CPP_BASE_URL, DEFAULT_LLAMA_CPP_TIMEOUT
+from app.config import EMBEDDING_LLM, OLLAMA
+from app.core.ollama_client import SESSION, build_url
 from src.data.enums import DocumentStatusEnum
 
 logger = logging.getLogger(__name__)
-SESSION = requests.Session()
-
-DEFAULT_EMBED_MODEL = os.getenv("LLAMA_CPP_EMBED_MODEL", "embedding")
-DEFAULT_LLAMA_CPP_EMBED_BASE_URL = os.getenv(
-    "LLAMA_CPP_EMBED_BASE_URL", DEFAULT_LLAMA_CPP_BASE_URL
-)
-DEFAULT_EMBED_BATCH = int(os.getenv("EMBED_BATCH_SIZE", "10"))
 
 
 def _fetch_embeddings(
     *,
     texts: List[str],
     model_name: str,
-    base_url: str,
-    timeout: int,
 ) -> List[List[float]]:
     payload = {
         "model": model_name,
         "input": texts,
-        "encoding_format": "float",
     }
     response = SESSION.post(
-        f"{base_url.rstrip('/')}/v1/embeddings",
+        build_url(OLLAMA.embed_path),
         json=payload,
-        timeout=timeout,
+        timeout=OLLAMA.timeout_seconds,
     )
     response.raise_for_status()
     data = response.json()
+
+    embeddings = data.get("embeddings")
+    if isinstance(embeddings, list) and embeddings:
+        if isinstance(embeddings[0], list):
+            return embeddings
+
+    # Backward compatibility for OpenAI-like payload shape if configured that way.
     items = data.get("data")
-    if not isinstance(items, list):
-        raise RuntimeError(f"Unexpected embeddings response: {data}")
-    try:
-        items_sorted = sorted(items, key=lambda item: item.get("index", 0))
-        return [item["embedding"] for item in items_sorted]
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError(f"Invalid embeddings payload: {data}") from exc
+    if isinstance(items, list):
+        try:
+            items_sorted = sorted(items, key=lambda item: item.get("index", 0))
+            return [item["embedding"] for item in items_sorted]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(f"Invalid embeddings payload: {data}") from exc
+
+    embedding = data.get("embedding")
+    if isinstance(embedding, list):
+        return [embedding]
+
+    raise RuntimeError(f"Unexpected embeddings response: {data}")
 
 
 def _get_slides_to_embed(limit: int | None) -> List[Slide]:
@@ -121,9 +122,8 @@ def _update_document_status(session, document_ids: List[str]) -> None:
 def run_embedding_pipeline(
     *,
     limit: int | None = None,
-    model_name: str = DEFAULT_EMBED_MODEL,
-    base_url: str = DEFAULT_LLAMA_CPP_EMBED_BASE_URL,
-    batch_size: int = DEFAULT_EMBED_BATCH,
+    model_name: str = EMBEDDING_LLM.model,
+    batch_size: int = EMBEDDING_LLM.batch_size,
 ) -> None:
     slides = _get_slides_to_embed(limit)
     if not slides:
@@ -142,8 +142,6 @@ def run_embedding_pipeline(
             embeddings = _fetch_embeddings(
                 texts=texts,
                 model_name=model_name,
-                base_url=base_url,
-                timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
@@ -156,8 +154,6 @@ def run_embedding_pipeline(
                         _fetch_embeddings(
                             texts=[text],
                             model_name=model_name,
-                            base_url=base_url,
-                            timeout=DEFAULT_LLAMA_CPP_TIMEOUT,
                         )
                     )
                 except Exception as per_exc:  # noqa: BLE001

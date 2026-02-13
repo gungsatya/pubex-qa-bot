@@ -1,21 +1,16 @@
 from __future__ import annotations
 import os
+import subprocess
 from pathlib import Path
 from app.core.pdf_downloader import download_all_from_idx_for_year
-from app.core.ingestion_pipeline import (
-    run_ingestion as run_ingestion_pipeline,
-    run_ingestion_multi_model as run_ingestion_multi_model_pipeline,
-)
+from app.core.ingestion_pipeline import run_ingestion as run_ingestion_pipeline
 from app.core.embedding_pipeline import run_embedding_pipeline
-from app.core.llama_cpp_test_pipeline import (
-    run_llama_cpp_chat_test as run_llama_cpp_chat_test_pipeline,
-)
+from app.config import VLM
 import sys
 import logging
 from typing import Callable, Dict
 
 from app.logging_config import setup_logging
-from app.config import DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR, DEFAULT_VLM_MODEL
 logger = logging.getLogger(__name__)
 
 # ===== ANSI Colors =====
@@ -56,20 +51,22 @@ def print_header():
     clear_screen()
 
     # ===== ASCII ART BANNER =====
-    print(f"""{BOLD}{RED}
+    banner_main = r"""
 .______    __    __  .______    __________   ___ 
 |   _  \  |  |  |  | |   _  \  |   ____\  \ /  / 
 |  |_)  | |  |  |  | |  |_)  | |  |__   \  V  /  
 |   ___/  |  |  |  | |   _  <  |   __|   >   <   
 |  |      |  `--'  | |  |_)  | |  |____ /  .  \  
 | _|       \______/  |______/  |_______/__/ \__\ 
-                                                                                                    
-{BOLD}{WHITE}                                       
+"""
+    banner_sub = r"""
+                                       
 ▄█████▄ ▄████▄     █████▄ ▄████▄ ██████ 
 ██ ▄ ██ ██▄▄██ ▄▄▄ ██▄▄██ ██  ██   ██   
 ▀█████▀ ██  ██     ██▄▄█▀ ▀████▀   ██   
      ▀▀                                 
-{RESET}""")
+"""
+    print(f"{BOLD}{RED}{banner_main}{BOLD}{WHITE}{banner_sub}{RESET}")
 
     # ===== INFO BOX =====
     print(f"{CYAN}" + "─" * 62 + f"{RESET}")
@@ -84,8 +81,6 @@ def print_menu():
     print(f"  [2] Ingestion Pipeline{RESET}")
     print(f"  [3] Embedding Pipeline{RESET}")
     print(f"  [4] Run QA-Bot (Chainlit){RESET}")
-    print(f"  [5] Ingestion Multi-Model (Compare){RESET}")
-    print(f"  [6] Llama.cpp Chat Test (Image Prompt){RESET}")
     print(f"  [0] {RED}Keluar{RESET}\n")
 
 
@@ -116,58 +111,73 @@ def download_documents():
 
 def run_ingestion():
     print(f"\n{YELLOW}Ingestion Pipeline{RESET}")
-    limit_text = input(
-        "Limit dokumen (kosong = semua, contoh 10): "
+    document_ids_text = input(
+        "Document ID (opsional, bisa lebih dari 1 pisahkan koma): "
     ).strip()
-    if limit_text:
-        if not limit_text.isdigit():
-            print(f"{RED}Limit harus berupa angka.{RESET}")
-            return
-        limit = int(limit_text)
-    else:
+    document_ids = [
+        doc_id.strip() for doc_id in document_ids_text.split(",") if doc_id.strip()
+    ]
+
+    if document_ids:
         limit = None
-
-    print(
-        f"{CYAN}Mulai ingestion dokumen berstatus downloaded..."
-        f"{RESET}"
-    )
-    logger.info("Ingestion started (limit=%s).", limit)
-    run_ingestion_pipeline(limit=limit)
-
-
-def run_ingestion_multi_model():
-    print(f"\n{YELLOW}Ingestion Multi-Model (Compare){RESET}")
-    limit_text = input(
-        "Limit dokumen (kosong = semua, contoh 10): "
-    ).strip()
-    if limit_text:
-        if not limit_text.isdigit():
-            print(f"{RED}Limit harus berupa angka.{RESET}")
-            return
-        limit = int(limit_text)
+        print(f"{CYAN}Mulai ingestion dokumen berdasarkan Document ID...{RESET}")
     else:
-        limit = None
+        limit_text = input(
+            "Limit dokumen (kosong = semua, contoh 10): "
+        ).strip()
+        if limit_text:
+            if not limit_text.isdigit():
+                print(f"{RED}Limit harus berupa angka.{RESET}")
+                return
+            limit = int(limit_text)
+        else:
+            limit = None
 
-    models_text = input(
-        "Masukkan daftar model (pisahkan dengan koma): "
-    ).strip()
-    models = [m.strip() for m in models_text.split(",") if m.strip()]
-    if not models:
-        print(f"{RED}Model tidak boleh kosong.{RESET}")
-        return
+        print(
+            f"{CYAN}Mulai ingestion dokumen berstatus downloaded dan failed to ingest...{RESET}"
+        )
+    note = input("Note ingestion (opsional): ").strip() or None
 
-    print(
-        f"{CYAN}Mulai ingestion multi-model untuk: {', '.join(models)}..."
-        f"{RESET}"
+    logger.info(
+        "Ingestion started (limit=%s, document_ids=%s, note=%s, vlm_model=%s).",
+        limit,
+        document_ids,
+        note,
+        VLM.model,
     )
-    logger.info("Ingestion multi-model started (limit=%s, models=%s).", limit, models)
-    run_ingestion_multi_model_pipeline(limit=limit, models=models)
+    run_ingestion_pipeline(
+        limit=limit,
+        document_ids=document_ids,
+        note=note,
+    )
 
 
 def run_chainlit():
-    print(f"\n{BLUE}Menjalankan Chainlit...{RESET}")
-    logger.info("Chainlit stub called.")
-    print("Belum diimplementasikan.")
+    app_path = Path("src/app/chainlit/app.py")
+    if not app_path.exists():
+        print(f"{RED}Aplikasi Chainlit tidak ditemukan: {app_path}{RESET}")
+        return
+
+    host = input("Host Chainlit [0.0.0.0]: ").strip() or "0.0.0.0"
+    port = input("Port Chainlit [8000]: ").strip() or "8000"
+    if not port.isdigit():
+        print(f"{RED}Port harus berupa angka.{RESET}")
+        return
+
+    cmd = [
+        "python",
+        "-m",
+        "chainlit",
+        "run",
+        str(app_path),
+        "--host",
+        host,
+        "--port",
+        port,
+    ]
+    logger.info("Menjalankan Chainlit dengan command: %s", " ".join(cmd))
+    print(f"\n{BLUE}Menjalankan Chainlit di http://{host}:{port}{RESET}")
+    subprocess.run(cmd, check=False)
 
 def run_embedding():
     print(f"\n{YELLOW}Embedding Pipeline{RESET}")
@@ -187,51 +197,18 @@ def run_embedding():
     run_embedding_pipeline(limit=limit)
 
 
-def run_llama_cpp_chat_test():
-    print(f"\n{YELLOW}Llama.cpp Chat Test (Image Prompt){RESET}")
-
-    image_path_text = input("Path image: ").strip()
-    # if not image_path:
-    #     print(f"{RED}Path image tidak boleh kosong.{RESET}")
-    #     return
-    image_path = image_path_text or "/home/gungsatya/Projects/pubex-qa-bot/src/data/documents/pubex/2025/AALI/slides/2097b41d-112b-48b6-96d9-72e7412aaa20/005.png"
-
-    model_text = input(f"Model (default: {DEFAULT_VLM_MODEL}): ").strip()
-    model = model_text or DEFAULT_VLM_MODEL
-
-    output_dir_text = input(
-        f"Output folder (default: {DEFAULT_LLAMA_CPP_TEST_OUTPUT_DIR}): "
-    ).strip()
-    output_dir = output_dir_text or None
-
-    try:
-        output_path = run_llama_cpp_chat_test_pipeline(
-            image_path=image_path,
-            model=model,
-            output_dir=output_dir,
-        )
-    except Exception as exc:
-        logger.exception("Llama.cpp chat test error: %s", exc)
-        print(f"{RED}Error: {exc}{RESET}")
-        return
-
-    print(f"{GREEN}Selesai. Output disimpan di:{RESET} {output_path}")
-
-
 def main_loop():
     actions: Dict[str, Callable[[], None]] = {
         "1": download_documents,
         "2": run_ingestion,
         "3": run_embedding,
         "4": run_chainlit,
-        "5": run_ingestion_multi_model,
-        "6": run_llama_cpp_chat_test,
     }
 
     while True:
         print_header()
         print_menu()
-        choice = input("> Pilih menu [0-6]: ").strip()
+        choice = input("> Pilih menu [0-4]: ").strip()
 
         if choice == "0":
             print(f"\n{RED}Keluar dari QA-Bot. Bye!{RESET}")

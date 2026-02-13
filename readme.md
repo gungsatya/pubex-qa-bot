@@ -1,30 +1,37 @@
 # Pubex QA Bot
 
-## Deskripsi Proyek
+Mekanisme utama pada proyek ini:
 
-**Pubex QA Bot** adalah sebuah proyek tesis dari **I Gusti Bagus Ngurah Satya Wibawa**. Proyek ini mengembangkan mekanisme Question Answering (QA) Bot yang didukung oleh basis pengetahuan dari **PublicExpose Emiten (Pubex)**.
+1. `TUI` (`src/app/tui/main.py`)
+2. `Download` dokumen IDX (`src/app/core/pdf_downloader.py`)
+3. `Ingestion` slide (`src/app/core/ingestion_pipeline.py`)
+4. `Embedding` (`src/app/core/embedding_pipeline.py`)
+5. `Chainlit` app (`src/app/chainlit/app.py`)
 
-## Tujuan
+## Setup Ollama
 
-Aplikasi ini dirancang untuk:
-- Menyediakan sistem chatbot yang dapat menjawab pertanyaan tentang informasi emiten yang terdaftar di PublicExpose
-- Memanfaatkan basis pengetahuan dari data Pubex sebagai sumber kebenaran (knowledge base)
-- Membantu pengguna mendapatkan informasi mengenai emiten secara cepat dan akurat melalui interface percakapan
+1. Jalankan script helper untuk menarik model:
 
-## Fitur Utama
+```bash
+./start_ollama.sh --pull-only
+```
 
-- **Question Answering**: Menerima pertanyaan dari pengguna dan memberikan jawaban berdasarkan basis pengetahuan Pubex
-- **Knowledge Base Integration**: Terintegrasi dengan data PublicExpose Emiten
-- **Conversational Interface**: Antarmuka berbasis percakapan untuk pengalaman pengguna yang lebih alami
+2. Jalankan server Ollama:
 
-## Teknologi
+```bash
+ollama serve
+```
 
-Proyek ini menggunakan teknologi dan framework yang mendukung pengembangan QA Bot berkualitas tinggi.
+Default endpoint yang digunakan aplikasi: `http://127.0.0.1:11434`.
 
-## Penulis
+## Menjalankan TUI
 
-**I Gusti Bagus Ngurah Satya Wibawa**
+```bash
+PYTHONPATH=src python -m app.tui.main
+```
 
----
+## Menjalankan Chainlit langsung
 
-*Proyek ini merupakan bagian dari penelitian tesis di bidang Natural Language Processing dan Information Retrieval.*
+```bash
+python -m chainlit run src/app/chainlit/app.py --host 0.0.0.0 --port 8000
+```
