@@ -53,9 +53,13 @@ class ModelGenerationConfig:
 
 
 @dataclass(frozen=True)
-class VLMTypeConfig(ModelGenerationConfig):
-    image_max_w: int
-    ingestion_pdf_dpi: int
+class DoclingConfig:
+    api_base_url: str
+    api_timeout_seconds: int
+    preset: str
+    batch_size: int
+    page_break_placeholder: str
+    image_dpi: int
 
 
 @dataclass(frozen=True)
@@ -126,15 +130,13 @@ OLLAMA = OllamaHTTPConfig(
     ),
 )
 
-VLM = VLMTypeConfig(
-    model=os.getenv("VLM_MODEL", "qwen2.5vl:3b"),
-    max_new_tokens=int(os.getenv("VLM_MAX_NEW_TOKENS", "2048")),
-    temperature=float(os.getenv("VLM_TEMPERATURE", "0.4")),
-    top_p=float(os.getenv("VLM_TOP_P", "0.8")),
-    top_k=int(os.getenv("VLM_TOP_K", "36")),
-    repeat_penalty=float(os.getenv("VLM_REPEAT_PENALTY", "1.2")),
-    image_max_w=int(os.getenv("VLM_IMAGE_MAX_W", "640")),
-    ingestion_pdf_dpi=int(os.getenv("INGESTION_PDF_DPI", "175")),
+DOCLING = DoclingConfig(
+    api_base_url=_env("DOCLING_API_BASE_URL", "http://localhost:8081"),
+    api_timeout_seconds=int(_env("DOCLING_API_TIMEOUT_SECONDS", "300")),
+    preset=_env("DOCLING_PRESET", "qwen"),
+    batch_size=int(_env("DOCLING_BATCH_SIZE", "1")),
+    page_break_placeholder=_env("DOCLING_PAGE_BREAK_PLACEHOLDER", "<!-- page break -->"),
+    image_dpi=int(_env("DOCLING_IMAGE_DPI", "175")),
 )
 
 LLM = ModelGenerationConfig(

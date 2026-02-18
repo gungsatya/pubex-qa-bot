@@ -5,7 +5,7 @@ from pathlib import Path
 from app.core.pdf_downloader import download_all_from_idx_for_year
 from app.core.ingestion_pipeline import run_ingestion as run_ingestion_pipeline
 from app.core.embedding_pipeline import run_embedding_pipeline
-from app.config import VLM
+from app.config import DOCLING
 import sys
 import logging
 from typing import Callable, Dict
@@ -139,11 +139,11 @@ def run_ingestion():
     note = input("Note ingestion (opsional): ").strip() or None
 
     logger.info(
-        "Ingestion started (limit=%s, document_ids=%s, note=%s, vlm_model=%s).",
+        "Ingestion started (limit=%s, document_ids=%s, note=%s, docling_preset=%s).",
         limit,
         document_ids,
         note,
-        VLM.model,
+        DOCLING.preset,
     )
     run_ingestion_pipeline(
         limit=limit,

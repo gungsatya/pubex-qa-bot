@@ -13,11 +13,11 @@ pgvector==0.2.4
 
 # PDF and Slide processing
 pymupdf==1.24.1
-pillow==10.3.0
+docling==2.73.1
 
 # Utilities
 tqdm==4.66.2
-requests==2.31.0
+requests>=2.32.2,<3
 llama-index-core==0.13.0
 cloudscraper==1.2.71
 chainlit

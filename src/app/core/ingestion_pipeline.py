@@ -1,246 +1,182 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from importlib import metadata as importlib_metadata
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
-from app.utils.document_utils import pdf_to_images, count_pdf_pages
-from app.utils.image_utils import downscale_png, validate_image_bytes
 from app.db.models import Document, Slide
 from app.db.session import get_session
-from app.core.ollama_vlm import generate_vlm
-from app.config import LLM, VLM
+from app.config import DOCLING, LLM
+from app.utils.document_utils import count_pdf_pages, pdf_to_png_images
 from src.data.enums import DocumentStatusEnum
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VLM_SINGLE = """You will be provided with an image of a PDF page or slide.
-
-Your task is to convert ALL visible content into structured Markdown format.
-
-You MUST act as a visual transcription and formatting system, NOT as an analyst.
-
-====================================
-PRIMARY OBJECTIVE
-====================================
-
-- Extract ONLY text, numbers, tables, and labels that are clearly visible.
-- Preserve original meaning and wording.
-- Do NOT summarize, interpret, explain, or rephrase.
-- Do NOT add any new information.
-- Do NOT guess missing or unclear content.
-- If content is unreadable -> omit it.
-
-====================================
-GENERAL RULES
-====================================
-
-1. All output MUST be in valid Markdown.
-2. Maintain original language as shown.
-3. Keep spelling, capitalization, and numeric values unchanged.
-4. Do NOT add commentary, opinions, or conclusions.
-5. Do NOT mention document format (PDF, slide, page, image, etc).
-6. Do NOT describe layout or positions.
-
-====================================
-TITLE HANDLING
-====================================
-
-If a clear title exists:
-
-- Write it as:
-
-## {Title}
-
-If no title exists:
-
-- Do NOT create one.
-
-====================================
-TEXT & LISTS
-====================================
-
-- Paragraphs -> normal Markdown text
-- Bullet points -> Markdown lists
-- Numbered items -> ordered lists
-
-Example:
-
-- Item A
-- Item B
-
-1. Step One
-2. Step Two
-
-====================================
-TABLES
-====================================
-
-If content appears in tabular form, convert it into Markdown tables.
-
-Example:
-
-| Column A | Column B |
-|----------|----------|
-| Value 1  | Value 2  |
-
-====================================
-CHARTS / GRAPHS
-====================================
-
-If charts or graphs are present:
-
-- Convert all visible numeric data into tables OR lists.
-- Include labels, units, and legends if visible.
-- Do NOT interpret trends.
-
-Example (Table):
-
-| Year | Revenue |
-|------|----------|
-| 2023 | 120      |
-| 2024 | 150      |
-
-Example (List):
-
-- 2023: 120
-- 2024: 150
-
-====================================
-INFOGRAPHICS / MAPS / DIAGRAMS
-====================================
-
-If infographics, maps, or diagrams are present:
-
-- Convert visible data into structured lists or tables.
-- Include names, markers, labels, and values.
-- Do NOT explain meaning.
-
-Example (List):
-
-- Factory: Jakarta
-- Warehouse: Surabaya
-- Port: Belawan
-
-====================================
-IMAGES WITH TEXT
-====================================
-
-- Extract all readable text inside images.
-- Ignore decorative or unreadable elements.
-
-====================================
-OUTPUT FORMAT
-====================================
-
-If title exists:
-
-## {Title}
-
-{Markdown content}
-
-If no title:
-
-{Markdown content only}
-
-====================================
-STRICT PROHIBITIONS
-====================================
-
-No interpretation
-No summarization
-No rewording
-No hallucination
-No inference
-No explanation
-
-Only transcribe and format what is visible.
-"""
-
-def _build_pubex_prompts() -> tuple[str, str]:
-    system_prompt = PROMPT_VLM_SINGLE
-    prompt = ""
-    return system_prompt, prompt
+DEFAULT_PAGE_BREAK_PLACEHOLDER = "<!-- page break -->"
+EXTRACTOR_METHOD = "docling_markdown_pagebreak"
 
 
-def _prepare_vlm_image_bytes(image_bytes: bytes) -> bytes:
-    return downscale_png(image_bytes, max_w=VLM.image_max_w)
-
-
-def _call_vlm(
-    *,
-    model: str,
-    system_prompt: str,
-    image_bytes: bytes,
-    temperature: float = VLM.temperature,
-) -> str:
+def _get_docling_version() -> str:
     try:
-        image_bytes = _prepare_vlm_image_bytes(image_bytes)
-        return generate_vlm(
-            model_id=model,
-            system_prompt=system_prompt.strip(),
-            image_bytes=image_bytes,
-            gen_kwargs={
-                "temperature": temperature,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"VLM error (Ollama): {exc}") from exc
+        return importlib_metadata.version("docling")
+    except importlib_metadata.PackageNotFoundError:
+        return "not_installed"
 
 
-def _is_kosong_marker(content: str) -> bool:
-    return (content or "").strip() == "[[KOSONG]]"
+def _raise_docling_incompatible(exc: Exception) -> None:
+    version = _get_docling_version()
+    raise RuntimeError(
+        "Docling terpasang tetapi tidak kompatibel dengan pipeline ini "
+        f"(version={version}). "
+        "Dibutuhkan API Docling VLM (`docling.datamodel.pipeline_options`, "
+        "`docling.pipeline.vlm_pipeline`). "
+        "Upgrade dependency: `pip install \"docling>=2,<3\"`."
+    ) from exc
 
 
-def _extract_pubex_single_prompt(
+def _load_docling_converter(
     *,
-    model: str,
-    image_bytes: bytes,
-) -> str:
-    system_prompt, prompt = _build_pubex_prompts()
-    raw_result = _call_vlm(
-        model=model,
-        system_prompt=system_prompt,
-        image_bytes=image_bytes,
+    base_url: str,
+    timeout_seconds: int,
+    preset: str,
+    batch_size: int,
+) -> Any:
+    try:
+        try:
+            from docling.datamodel.base_models import InputFormat
+        except ImportError:
+            from docling.datamodel.document import InputFormat  # fallback beberapa versi
+        from docling.datamodel.pipeline_options import (
+            VlmConvertOptions,
+            VlmPipelineOptions,
+        )
+        from docling.datamodel.vlm_engine_options import ApiVlmEngineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.models.inference_engines.vlm import VlmEngineType
+        from docling.pipeline.vlm_pipeline import VlmPipeline
+    except ImportError as exc:
+        # Kasus umum:
+        # - docling belum terpasang
+        # - docling lama (mis. 1.x) tanpa API VLM
+        # - import side-effect gagal karena dependency lama
+        if _get_docling_version() == "not_installed":
+            raise RuntimeError(
+                "Docling belum terpasang. Jalankan `pip install -r requirements.txt`."
+            ) from exc
+        _raise_docling_incompatible(exc)
+
+    endpoint = f"{base_url.rstrip('/')}/v1/chat/completions"
+    convert_options = VlmConvertOptions.from_preset(
+        preset,
+        engine_options=ApiVlmEngineOptions(
+            engine_type=VlmEngineType.API,
+            url=endpoint,
+            timeout=timeout_seconds,
+        ),
     )
-    if _is_kosong_marker(raw_result):
-        return ""
-    return raw_result
+    convert_options.batch_size = max(1, int(batch_size))
+
+    pipeline_options = VlmPipelineOptions(
+        vlm_options=convert_options,
+        enable_remote_services=True,
+    )
+    format_options = {
+        InputFormat.PDF: PdfFormatOption(
+            pipeline_options=pipeline_options,
+            pipeline_cls=VlmPipeline,
+        )
+    }
+    return DocumentConverter(
+        allowed_formats=format_options.keys(),
+        format_options=format_options,
+    )
+
+
+def _convert_pdf_to_markdown(
+    *,
+    converter: Any,
+    pdf_path: Path,
+    page_break_placeholder: str,
+) -> str:
+    result = converter.convert(str(pdf_path))
+    return result.document.export_to_markdown(
+        page_break_placeholder=page_break_placeholder,
+    )
+
+
+def _split_markdown_by_page_break(
+    markdown: str,
+    page_break_placeholder: str,
+) -> list[str]:
+    if page_break_placeholder and page_break_placeholder in markdown:
+        chunks = markdown.split(page_break_placeholder)
+    else:
+        chunks = [markdown]
+    # Pertahankan urutan halaman, termasuk halaman kosong.
+    return [chunk.strip() for chunk in chunks] or [""]
+
+
+def _align_markdown_pages(
+    pages_md: list[str],
+    target_page_count: int,
+) -> list[str]:
+    """
+    Samakan jumlah chunk markdown dengan jumlah halaman PDF agar 1 slide = 1 halaman image.
+    """
+    if target_page_count <= 0:
+        return pages_md or [""]
+
+    current_count = len(pages_md)
+    if current_count == target_page_count:
+        return pages_md
+
+    if current_count < target_page_count:
+        return pages_md + [""] * (target_page_count - current_count)
+
+    # current_count > target_page_count:
+    # simpan konten berlebih ke halaman terakhir agar data tidak hilang.
+    if target_page_count == 1:
+        return ["\n\n".join(pages_md)]
+    return pages_md[: target_page_count - 1] + ["\n\n".join(pages_md[target_page_count - 1 :])]
 
 
 def _store_slide(
     *,
-    session,
+    session: Any,
     document_id: str,
     slide_no: int,
     total_pages: int,
     pdf_path: Path,
-    slide_dir: Path,
-    image_bytes: bytes,
+    page_break_placeholder: str,
+    document_markdown_path: Path,
+    slide_markdown_path: Path,
     content_md: str,
+    image_path: Path,
+    image_dpi: int,
     model: str,
+    docling_base_url: str,
     text_model: str,
-    dpi: int,
     note: str | None,
-    extractor_method: str,
     start_at: datetime,
     end_at: datetime,
 ) -> None:
-    image_path = slide_dir / f"{slide_no:03}.png"
-    image_path.write_bytes(image_bytes)
-
     slide_metadata = {
         "slide_no": slide_no,
         "total_pages": total_pages,
         "file_path": str(pdf_path),
+        "page_break_placeholder": page_break_placeholder,
+        "docling_preset": model,
+        "docling_base_url": docling_base_url,
         "image_mime": "image/png",
-        "dpi": dpi,
-        "vlm_model": model,
+        "image_dpi": image_dpi,
         "llm_model": text_model,
-        "extractor_method": extractor_method,
+        "extractor_method": EXTRACTOR_METHOD,
+        "document_markdown_path": str(document_markdown_path),
+        "slide_markdown_path": str(slide_markdown_path),
     }
     if note:
         slide_metadata["ingestion_note"] = note
@@ -281,54 +217,44 @@ def _get_downloaded_documents(
 
 
 def _count_existing_slides(
-    session,
+    session: Any,
     document_id: str,
     model: str | None = None,
 ) -> int:
     stmt = select(func.count(Slide.id)).where(Slide.document_id == document_id)
     if model:
-        stmt = stmt.where(Slide.slide_metadata["vlm_model"].astext == model)
+        stmt = stmt.where(Slide.slide_metadata["docling_preset"].astext == model)
     return int(session.execute(stmt).scalar() or 0)
 
 
 def _delete_existing_slides(
-    session,
+    session: Any,
     document_id: str,
     model: str | None = None,
 ) -> int:
     query = session.query(Slide).filter(Slide.document_id == document_id)
     if model:
-        query = query.filter(Slide.slide_metadata["vlm_model"].astext == model)
+        query = query.filter(Slide.slide_metadata["docling_preset"].astext == model)
     deleted = query.delete(synchronize_session=False)
     return int(deleted or 0)
-
-
-def _infer_document_type(doc: Document) -> str:
-    collection_metadata = doc.collection.collection_metadata if doc.collection else None
-    if isinstance(collection_metadata, dict):
-        doc_type = collection_metadata.get("type")
-        if isinstance(doc_type, str) and doc_type.strip():
-            return doc_type.strip().lower()
-    if isinstance(doc.document_metadata, dict):
-        doc_type = doc.document_metadata.get("type")
-        if isinstance(doc_type, str) and doc_type.strip():
-            return doc_type.strip().lower()
-    return "unknown"
 
 
 def _process_document(
     *,
     document_id: str,
     pdf_path: Path,
+    converter: Any,
+    page_break_placeholder: str,
     model: str,
+    docling_base_url: str,
+    image_dpi: int,
     text_model: str,
-    dpi: int,
     note: str | None = None,
     overwrite_mode: str = "document",
     update_doc_status: bool = True,
 ) -> bool:
-    total_pages = count_pdf_pages(pdf_path)
-    if total_pages == 0:
+    total_pdf_pages = count_pdf_pages(pdf_path)
+    if total_pdf_pages == 0:
         logger.warning("PDF kosong: %s", pdf_path)
         return False
 
@@ -338,7 +264,6 @@ def _process_document(
         if doc is None:
             logger.warning("Dokumen tidak ditemukan: %s", document_id)
             return False
-        document_type = _infer_document_type(doc)
 
         if overwrite_mode not in {"document", "model", "none"}:
             raise ValueError(
@@ -370,71 +295,129 @@ def _process_document(
         slide_dir = pdf_path.parent / "slides" / document_id
         slide_dir.mkdir(parents=True, exist_ok=True)
 
-        for slide_no, img_bytes in pdf_to_images(pdf_path, dpi=dpi):
-            logger.info(
-                "Mulai proses slide %s/%s doc_id=%s (%s)",
-                slide_no,
-                total_pages,
+        conversion_start_at = datetime.now(timezone.utc)
+        try:
+            markdown = _convert_pdf_to_markdown(
+                converter=converter,
+                pdf_path=pdf_path,
+                page_break_placeholder=page_break_placeholder,
+            ) or ""
+            conversion_end_at = datetime.now(timezone.utc)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Gagal convert PDF ke markdown via Docling untuk doc_id=%s: %s",
                 document_id,
-                pdf_path.name,
+                exc,
             )
-            if not validate_image_bytes(img_bytes, slide_no):
-                logger.warning(
-                    "Validasi image gagal untuk slide %s/%s doc_id=%s",
-                    slide_no,
-                    total_pages,
-                    document_id,
-                )
-                success = False
-                continue
+            success = False
+            conversion_end_at = datetime.now(timezone.utc)
+            markdown = ""
 
-            start_at = datetime.now(timezone.utc)
-
+        if success:
             try:
-                if document_type == "pubex":
-                    raw_md = _extract_pubex_single_prompt(
-                        model=model,
-                        image_bytes=img_bytes,
+                document_markdown_path = slide_dir / "document.md"
+                document_markdown_path.write_text(markdown, encoding="utf-8")
+                pages_md = _split_markdown_by_page_break(
+                    markdown,
+                    page_break_placeholder=page_break_placeholder,
+                )
+                total_pages = total_pdf_pages
+                if len(pages_md) != total_pdf_pages:
+                    logger.warning(
+                        "Jumlah halaman dari markdown (%s) berbeda dengan PDF (%s) doc_id=%s",
+                        len(pages_md),
+                        total_pdf_pages,
+                        document_id,
                     )
-                    content_md = raw_md
-                    extractor_method = "pubex_single_prompt_ollama"
-                else:
-                    content_md = ""
-                    extractor_method = "unsupported_document_type"
-                end_at = datetime.now(timezone.utc)
+                pages_md = _align_markdown_pages(
+                    pages_md=pages_md,
+                    target_page_count=total_pages,
+                )
+
+                page_images: dict[int, bytes] = dict(
+                    pdf_to_png_images(pdf_path, dpi=image_dpi)
+                )
+                if len(page_images) != total_pages:
+                    logger.warning(
+                        "Jumlah image halaman (%s) berbeda dengan PDF (%s) doc_id=%s",
+                        len(page_images),
+                        total_pages,
+                        document_id,
+                    )
+
+                conversion_duration_seconds = max(
+                    (conversion_end_at - conversion_start_at).total_seconds(),
+                    0.0,
+                )
+                per_slide_seconds = (
+                    conversion_duration_seconds / total_pages
+                    if total_pages > 0
+                    else 0.0
+                )
+
+                for slide_no, page_md in enumerate(
+                    pages_md[:total_pages],
+                    start=1,
+                ):
+                    logger.info(
+                        "Mulai simpan slide %s/%s doc_id=%s (%s)",
+                        slide_no,
+                        total_pages,
+                        document_id,
+                        pdf_path.name,
+                    )
+                    slide_markdown_path = slide_dir / f"{slide_no:03}.md"
+                    slide_markdown_path.write_text(page_md, encoding="utf-8")
+                    image_path = slide_dir / f"{slide_no:03}.png"
+
+                    page_image = page_images.get(slide_no)
+                    if page_image is None:
+                        logger.error(
+                            "Image halaman %s tidak ditemukan doc_id=%s. Slide dilewati.",
+                            slide_no,
+                            document_id,
+                        )
+                        success = False
+                        continue
+                    image_path.write_bytes(page_image)
+
+                    slide_start_at = conversion_start_at + timedelta(
+                        seconds=per_slide_seconds * (slide_no - 1)
+                    )
+                    slide_end_at = slide_start_at + timedelta(seconds=per_slide_seconds)
+
+                    _store_slide(
+                        session=session,
+                        document_id=document_id,
+                        slide_no=slide_no,
+                        total_pages=total_pages,
+                        pdf_path=pdf_path,
+                        page_break_placeholder=page_break_placeholder,
+                        document_markdown_path=document_markdown_path,
+                        slide_markdown_path=slide_markdown_path,
+                        content_md=page_md,
+                        image_path=image_path,
+                        image_dpi=image_dpi,
+                        model=model,
+                        docling_base_url=docling_base_url,
+                        text_model=text_model,
+                        note=note,
+                        start_at=slide_start_at,
+                        end_at=slide_end_at,
+                    )
+                    logger.info(
+                        "Selesai simpan slide %s/%s doc_id=%s",
+                        slide_no,
+                        total_pages,
+                        document_id,
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
-                    "Gagal memanggil VLM untuk doc_id=%s slide=%s: %s",
+                    "Gagal memproses hasil markdown untuk doc_id=%s: %s",
                     document_id,
-                    slide_no,
                     exc,
                 )
                 success = False
-                continue
-
-            _store_slide(
-                session=session,
-                document_id=document_id,
-                slide_no=slide_no,
-                total_pages=total_pages,
-                pdf_path=pdf_path,
-                slide_dir=slide_dir,
-                image_bytes=img_bytes,
-                content_md=content_md,
-                model=model,
-                text_model=text_model,
-                dpi=dpi,
-                note=note,
-                extractor_method=extractor_method,
-                start_at=start_at,
-                end_at=end_at,
-            )
-            logger.info(
-                "Selesai proses slide %s/%s doc_id=%s",
-                slide_no,
-                total_pages,
-                document_id,
-            )
 
         if update_doc_status:
             doc.status = (
@@ -452,9 +435,8 @@ def run_ingestion(
     limit: int | None = None,
     document_ids: Sequence[str] | None = None,
     note: str | None = None,
-    model: str = VLM.model,
+    model: str = DOCLING.preset,
     text_model: str = LLM.model,
-    dpi: int = VLM.ingestion_pdf_dpi,
     overwrite_mode: str = "document",
     update_doc_status: bool = True,
 ) -> None:
@@ -469,11 +451,32 @@ def run_ingestion(
         # Explicit document selection should not mutate document lifecycle state.
         update_doc_status = False
 
+    page_break_placeholder = (
+        DOCLING.page_break_placeholder.strip()
+        if DOCLING.page_break_placeholder
+        else DEFAULT_PAGE_BREAK_PLACEHOLDER
+    )
+    model = model.strip() or DOCLING.preset
+
     logger.info(
-        "Konfigurasi ingestion: vlm_model=%s, llm_model=%s",
+        "Konfigurasi ingestion: docling_preset=%s, docling_api_base_url=%s, image_dpi=%s, llm_model=%s",
         model,
+        DOCLING.api_base_url,
+        DOCLING.image_dpi,
         text_model,
     )
+
+    try:
+        converter = _load_docling_converter(
+            base_url=DOCLING.api_base_url,
+            timeout_seconds=DOCLING.api_timeout_seconds,
+            preset=model,
+            batch_size=DOCLING.batch_size,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Gagal memuat DocumentConverter Docling: %s", exc)
+        print(f"Gagal memuat DocumentConverter Docling: {exc}")
+        return
 
     start_at = datetime.now(timezone.utc)
     docs = _get_downloaded_documents(limit, document_ids=document_ids)
@@ -502,9 +505,12 @@ def run_ingestion(
         _process_document(
             document_id=doc.id,
             pdf_path=pdf_path,
+            converter=converter,
+            page_break_placeholder=page_break_placeholder,
             model=model,
+            docling_base_url=DOCLING.api_base_url,
+            image_dpi=DOCLING.image_dpi,
             text_model=text_model,
-            dpi=dpi,
             note=note,
             overwrite_mode=overwrite_mode,
             update_doc_status=update_doc_status,

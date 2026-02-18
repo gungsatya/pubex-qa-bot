@@ -1,4 +1,13 @@
+from pathlib import Path
+import sys
 from typing import List, Dict, Any
+
+# Allow running this script directly via `streamlit run ...` without
+# requiring `PYTHONPATH=src` to be set manually.
+if __package__ in {None, ""}:
+    src_dir = Path(__file__).resolve().parents[2]
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
 
 import streamlit as st
 from sqlalchemy import select, func, cast, Integer
@@ -170,21 +179,32 @@ def main() -> None:
             else:
                 st.markdown("**ingestion_time**: (tidak tersedia)")
 
-            vlm_model = (slide.get("slide_metadata") or {}).get("vlm_model")
-            st.markdown(f"**vlm_model**: {vlm_model or '(tidak tersedia)'}")
+            metadata = slide.get("slide_metadata") or {}
+            extractor_method = metadata.get("extractor_method")
+            docling_preset = metadata.get("docling_preset")
+            st.markdown(
+                f"**extractor_method**: {extractor_method or '(tidak tersedia)'}"
+            )
+            st.markdown(
+                f"**docling_preset**: {docling_preset or '(tidak tersedia)'}"
+            )
 
             st.markdown("**metadata**")
-            st.json(slide["slide_metadata"] or {})
+            st.json(metadata)
 
             st.markdown("**content_text**")
             st.markdown(slide["content_text"] or "(kosong)")
 
         with right_col:
-            img_bytes = load_slide_image_bytes(slide["image_path"])
-            if img_bytes:
-                st.image(img_bytes, caption="Slide Image", width=500)
+            image_path = slide.get("image_path")
+            if image_path:
+                img_bytes = load_slide_image_bytes(image_path)
+                if img_bytes:
+                    st.image(img_bytes, caption="Slide Image", width=500)
+                else:
+                    st.warning("Image tidak tersedia.")
             else:
-                st.warning("Image tidak tersedia.")
+                st.caption("Image tidak disimpan pada mode ingestion Docling.")
 
     shown = min(len(slides), total)
     st.write(f"Menampilkan {shown} dari {total} slide.")

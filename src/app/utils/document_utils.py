@@ -3,11 +3,9 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import Generator, Tuple
+from typing import Generator
 
 import fitz  # PyMuPDF
-from PIL import Image
-import io
 
 logger = logging.getLogger(__name__)
 
@@ -47,33 +45,21 @@ def count_pdf_pages(pdf_path: Path) -> int:
         return doc.page_count
 
 
-def pdf_to_images(
+def pdf_to_png_images(
     pdf_path: Path,
     dpi: int = 150,
-) -> Generator[Tuple[int, bytes], None, None]:
+) -> Generator[tuple[int, bytes], None, None]:
     """
-    Generator: mengubah PDF menjadi image per halaman, satu per satu.
+    Render PDF menjadi PNG per halaman.
 
     Yields:
-        (slide_no, image_bytes_png)
+        (page_no, png_bytes)
     """
-    zoom = dpi / 72.0  # PDF default 72 dpi
-    mat = fitz.Matrix(zoom, zoom)
+    zoom = dpi / 72.0  # PDF default 72 DPI
+    matrix = fitz.Matrix(zoom, zoom)
 
     with fitz.open(pdf_path) as doc:
         for page_index in range(doc.page_count):
             page = doc.load_page(page_index)
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-
-            # Konversi ke PNG bytes
-            img = Image.frombytes(
-                "RGB",
-                [pix.width, pix.height],
-                pix.samples,
-            )
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            img_bytes = buf.getvalue()
-
-            slide_no = page_index + 1
-            yield slide_no, img_bytes
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            yield page_index + 1, pix.tobytes("png")
