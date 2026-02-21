@@ -5,10 +5,10 @@ HOST="0.0.0.0"
 PORT="8081"
 
 # Quant paling balance untuk 6GB
-HF_REPO="unsloth/Qwen2.5-VL-3B-Instruct-GGUF:Q5_K_M"
+HF_REPO="unsloth/Qwen2.5-VL-3B-Instruct-GGUF:Q4_K_M"
 
 # Context aman untuk VLM di 6GB
-CTX_SIZE="8192"
+CTX_SIZE="6144"
 
 # Fokus single request (lebih stabil daripada auto=4 slot)
 N_PARALLEL="1"
@@ -33,7 +33,7 @@ IMAGE_MIN_TOKENS="1024"
 
 # Batasi image max tokens biar tidak "meledak" untuk slide resolusi tinggi
 # Jika kamu merasa detail masih kurang, naikkan ke 2048
-IMAGE_MAX_TOKENS="1536"
+IMAGE_MAX_TOKENS="2048"
 
 # Prompt cache RAM (opsional)
 # 0 = disable, atau kecilkan mis. 2048 untuk hemat RAM
@@ -56,6 +56,12 @@ exec llama-server \
   --mmproj-auto \
   --mmproj-offload \
   --n-gpu-layers all \
+  --jinja \
+  --top-p "${TOP_P}" \
+  --top-k "${TOP_K}" \
+  --temp "${TEMP}" \
+  --min-p "${MIN_P}" \
+  --presence-penalty "${PRES_PEN}" \
   --fit on \
   --flash-attn on \
   --ctx-size "${CTX_SIZE}" \
@@ -67,10 +73,4 @@ exec llama-server \
   --image-min-tokens "${IMAGE_MIN_TOKENS}" \
   --image-max-tokens "${IMAGE_MAX_TOKENS}" \
   --cache-ram "${CACHE_RAM}" \
-  --jinja \
-  --top-p "${TOP_P}" \
-  --top-k "${TOP_K}" \
-  --temp "${TEMP}" \
-  --min-p "${MIN_P}" \
-  --presence-penalty "${PRES_PEN}" \
   --no-perf

@@ -26,6 +26,7 @@ class DocumentRepository:
         checksum: str,
         name: str,
         file_path: str,
+        file_md_path: Optional[str] = None,
         publish_at: Optional[datetime] = None,
         status_id: int,
         metadata: dict | None = None,
@@ -38,6 +39,7 @@ class DocumentRepository:
             publish_at=publish_at,
             status=status_id,
             file_path=file_path,
+            file_md_path=file_md_path,
             document_metadata=metadata or {},
         )
         self.session.add(doc)

@@ -317,6 +317,7 @@ def _process_document(
             try:
                 document_markdown_path = slide_dir / "document.md"
                 document_markdown_path.write_text(markdown, encoding="utf-8")
+                doc.file_md_path = str(document_markdown_path)
                 pages_md = _split_markdown_by_page_break(
                     markdown,
                     page_break_placeholder=page_break_placeholder,

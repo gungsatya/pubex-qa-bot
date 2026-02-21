@@ -168,6 +168,10 @@ class Document(Base):
         String,
         nullable=False,
     )
+    file_md_path: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+    )
     # Kolom DB tetap "metadata", attribute Python = document_metadata
     document_metadata: Mapped[Optional[dict]] = mapped_column(
         "metadata",
