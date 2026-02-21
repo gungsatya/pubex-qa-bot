@@ -5,17 +5,17 @@ HOST="0.0.0.0"
 PORT="8081"
 
 # Quant paling balance untuk 6GB
-HF_REPO="unsloth/Qwen2.5-VL-3B-Instruct-GGUF:Q4_K_M"
+HF_REPO="unsloth/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M"
 
 # Context aman untuk VLM di 6GB
-CTX_SIZE="6144"
+CTX_SIZE="8192"
 
 # Fokus single request (lebih stabil daripada auto=4 slot)
 N_PARALLEL="1"
 
 # Batch tuning (aman, bisa kamu naikkan nanti)
-BATCH="1024"
-UBATCH="256"
+BATCH="2048"
+UBATCH="128"
 
 # Sampling (meniru preferensi kamu)
 TOP_P="0.8"
@@ -37,7 +37,7 @@ IMAGE_MAX_TOKENS="2048"
 
 # Prompt cache RAM (opsional)
 # 0 = disable, atau kecilkan mis. 2048 untuk hemat RAM
-CACHE_RAM="2048"
+CACHE_RAM="0"
 
 echo "========================================"
 echo " llama-server Qwen3-VL-2B"
@@ -73,4 +73,5 @@ exec llama-server \
   --image-min-tokens "${IMAGE_MIN_TOKENS}" \
   --image-max-tokens "${IMAGE_MAX_TOKENS}" \
   --cache-ram "${CACHE_RAM}" \
-  --no-perf
+  --no-perf \
+  --cont-batching
