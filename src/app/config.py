@@ -60,6 +60,7 @@ class DoclingConfig:
     batch_size: int
     page_break_placeholder: str
     image_dpi: int
+    image_max_width_px: int
 
 
 @dataclass(frozen=True)
@@ -133,10 +134,11 @@ OLLAMA = OllamaHTTPConfig(
 DOCLING = DoclingConfig(
     api_base_url=_env("DOCLING_API_BASE_URL", "http://localhost:8081"),
     api_timeout_seconds=int(_env("DOCLING_API_TIMEOUT_SECONDS", "300")),
-    preset=_env("DOCLING_PRESET", "qwen"),
+    preset=_env("DOCLING_PRESET", "granite_vision"),
     batch_size=int(_env("DOCLING_BATCH_SIZE", "1")),
     page_break_placeholder=_env("DOCLING_PAGE_BREAK_PLACEHOLDER", "<!-- page break -->"),
     image_dpi=int(_env("DOCLING_IMAGE_DPI", "175")),
+    image_max_width_px=int(_env("DOCLING_IMAGE_MAX_WIDTH", "1800")),
 )
 
 LLM = ModelGenerationConfig(

@@ -40,7 +40,16 @@ def _ask_doc_type() -> str | None:
     return None
 
 def clear_screen():
-    os.system("cls" if os.name == "nt" else "clear")
+    if not sys.stdout.isatty():
+        return
+
+    if os.name == "nt":
+        os.system("cls")
+        return
+
+    term = os.environ.get("TERM", "").strip().lower()
+    if term and term != "dumb":
+        os.system("clear")
 
 
 def pause(msg="\nTekan ENTER untuk kembali ke menu..."):

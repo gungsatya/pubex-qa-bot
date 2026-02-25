@@ -24,6 +24,7 @@ def get_logging_config():
             "class": "logging.StreamHandler",
             "formatter": "console",
             "level": LOG_LEVEL,
+            "stream": "ext://sys.stdout",
         },
     }
 
